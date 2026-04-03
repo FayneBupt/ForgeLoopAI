@@ -1,1 +1,0 @@
-{"round_index": 1, "ts": "2026-04-03T02:25:53Z", "status": "ROUND_FAILED", "summary": "insert paimon case failed", "bugs": "jni null pointer", "fixes": "add null check", "commits": "abc123", "prompt_tokens": 1200, "completion_tokens": 600, "total_tokens": 1800}

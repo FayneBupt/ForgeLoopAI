@@ -1,9 +1,0 @@
-{
-  "max_rounds": 5,
-  "require_confirmation_on": [
-    "destructive_command",
-    "auto_commit",
-    "over_budget"
-  ],
-  "token_budget_per_round": 200000
-}
