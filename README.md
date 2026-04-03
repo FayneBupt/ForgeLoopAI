@@ -104,6 +104,27 @@ forgeloop show doris_bug_123
 
 ---
 
+## 🐳 最佳实践：搭配极简湖仓沙盒
+
+在进行诸如 Apache Doris 湖仓一体（Lakehouse）相关的开发或 Bug 修复时，往往需要一个包含 HDFS、Hive Metastore 等组件的底层环境。
+
+推荐搭配使用 [Lakehouse-Sandbox-Cluster](https://github.com/FayneBupt/Lakehouse-Sandbox-Cluster) —— 一个专为测试和开发湖仓组件设计的极简、开箱即用的 Docker Compose 沙盒。
+
+你可以将其一键集成到 ForgeLoopAI 的 `config.json` 中作为前置依赖：
+```json
+{
+  "deploy_commands": [
+    "cd /path/to/Lakehouse-Sandbox-Cluster && docker-compose up -d",
+    "sleep 15",
+    "docker cp init.sql paimon-flink-jobmanager:/tmp/init.sql",
+    "docker exec paimon-flink-jobmanager ./bin/sql-client.sh -f /tmp/init.sql"
+  ]
+}
+```
+这样，AI 在执行测试前就会自动拉起 HDFS + Hive Metastore + Flink，并准备好测试表与数据，为你提供一个完美的最小化外围环境。
+
+---
+
 ## 🧹 其他命令
 
 如果你修完了 Bug 且代码已经 Merge，想清理掉这个项目的运行时历史：
