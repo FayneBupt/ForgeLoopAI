@@ -1,1 +1,118 @@
-# ForgeLoopAI
+# 🚀 ForgeLoopAI v1.0
+
+![Python](https://img.shields.io/badge/Python-3.7%2B-blue.svg)
+![License](https://img.shields.io/badge/License-MIT-green.svg)
+![IDE](https://img.shields.io/badge/IDE-Trae%20Solo%20Coder-purple.svg)
+
+**ForgeLoopAI** 是一个专为 IDE Agent（例如 Trae 的 Solo Coder）设计的 **极简开发上下文与 Prompt 管理器**。
+
+在面对 Apache Doris 等重型 C++ / Java / Rust 大型开源工程时，IDE Agent 常常会：
+- 🤯 **记不住复杂的构建/部署环境**（比如几十行的 `cmake` 或 `docker compose` 指令）
+- 🔄 **陷入死循环**（遇到编译报错疯狂盲目重试，直到耗尽上下文）
+- 🗑️ **开发状态混乱**（挂机跑了一晚上，完全不知道它解决了什么、提交了什么、消耗了多少 Token）
+
+**ForgeLoopAI 彻底摒弃了传统 CI/CD 沉重的 Pipeline 架构。** 
+它通过「本地文件记录」和「单轮强约束 Prompt 生成」的机制，将复杂的开发流程降维成 **1个配置文件** 和 **3个极简命令**。
+
+---
+
+## ✨ 核心特性
+
+- **📂 纯本地文件系统管理**：无需数据库、无 Daemon 服务。一切状态均记录在你当前目录的 `runtime/` 中，Git 友好。
+- **🧩 组合命令管理**：将 `build` / `deploy` / `test` 的多行 Bash 命令统一托管，每次发给 AI 前自动注入。
+- **🛑 单轮防失控机制**：通过精心调优的 Prompt 模版，强行约束 AI 执行「编译->部署->测试->修复」的单轮闭环后必须立即停止工作。
+- **📊 自动战况汇总**：AI 工作完成后会按要求将成果（Bug、Fix、Token）写入本地 JSON，你可以随时在终端通过漂亮的表格一览无余。
+
+---
+
+## 🛠️ 快速安装
+
+```bash
+git clone https://github.com/your-username/ForgeLoopAI.git
+cd ForgeLoopAI
+
+# 推荐以可编辑模式全局安装
+pip install -e .
+
+# 配置 alias (可选)
+alias fl='forgeloop'
+```
+
+---
+
+## 🚀 3分钟快速上手
+
+我们以修复一个叫 `doris_bug_123` 的任务为例：
+
+### 1. 初始化项目与任务配置
+```bash
+forgeloop init doris_bug_123
+```
+这会在当前目录下生成 `runtime/projects/doris_bug_123/config.json`。
+打开这个文件，填入你的代码路径、业务目标以及复杂的组合命令：
+```json
+{
+  "project_name": "doris_bug_123",
+  "project_path": "/data/doris/source",
+  "goal": "修复湖仓读取 Parquet 的 Null 指针异常，必须通过所有回归测试",
+  "build_commands": [
+    "export SKIP_CONTRIB_SUBMODULE_UPDATE=1",
+    "bash build.sh --be -j8"
+  ],
+  "deploy_commands": [
+    "docker compose -f docker-compose.yaml up -d"
+  ],
+  "test_commands": [
+    "bash run-regression-test.sh"
+  ]
+}
+```
+
+### 2. 生成 Prompt (推动 AI 工作)
+```bash
+forgeloop push doris_bug_123
+```
+执行后，工具会扫描历史记录，并生成包含「前情提要」和「严格契约」的 `prompt_round_1.md`。
+
+**👉 你的动作：** 
+打开该 Markdown 文件，全选复制，直接发给 Trae 的 Solo Coder 对话框。然后去喝杯咖啡。☕
+
+> *在 Prompt 中，Trae 被要求执行完一轮后，将总结自动写回 `runtime/projects/doris_bug_123/history/round_1.json`。*
+
+### 3. 查看全局战况
+当你回到工位，只需要敲：
+```bash
+forgeloop status
+```
+你就能看到清爽的进度表格：
+```text
+项目名称                  | 轮次   | 消耗Tokens   | 最新状态            
+----------------------------------------------------------------------
+doris_bug_123             | 1      | 2450         | FAILED
+another_project           | 5      | 15000        | SUCCEEDED
+```
+
+### 4. 查看具体轮次明细
+如果上一轮失败了，想看看 AI 到底踩了什么坑：
+```bash
+forgeloop show doris_bug_123
+```
+工具会直接打印出 AI 每轮发现的 Bug、做的修改和 Token 消耗明细。
+然后你只需再次执行 `forgeloop push doris_bug_123`，工具会把之前的失败记录打包成前情提要，开启全新的第 2 轮！
+
+---
+
+## 🧹 其他命令
+
+如果你修完了 Bug 且代码已经 Merge，想清理掉这个项目的运行时历史：
+```bash
+forgeloop rm doris_bug_123
+```
+
+---
+
+## 🤝 贡献与参与
+
+这个项目目前定位为面向个人开发者的极简工具。如果你有更好的 Prompt 约束技巧或者希望增加对其他 IDE（如 Cursor / Windsurf）的预设模版，欢迎提交 Pull Request！
+
+**License:** MIT
