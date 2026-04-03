@@ -64,10 +64,13 @@ def main() -> None:
                 text = str(text)
                 return text + " " * max(0, width - c_len(text))
 
-            print(f"{pad('项目名称', 25)} | {pad('轮次', 6)} | {pad('消耗Tokens', 12)} | {pad('最新状态', 20)}")
-            print("-" * 70)
+            # 动态计算最长项目名称的宽度，最少为 25
+            max_name_len = max([c_len(p['project']) for p in projects] + [25])
+            
+            print(f"{pad('项目名称', max_name_len)} | {pad('轮次', 6)} | {pad('消耗Tokens', 12)} | {pad('最新状态', 20)}")
+            print("-" * (max_name_len + 45))
             for p in projects:
-                print(f"{pad(p['project'], 25)} | {pad(p['rounds'], 6)} | {pad(p['total_tokens'], 12)} | {p['last_status']}")
+                print(f"{pad(p['project'], max_name_len)} | {pad(p['rounds'], 6)} | {pad(p['total_tokens'], 12)} | {p['last_status']}")
     elif args.command == 'show' and result.get("status") == "success":
         history = result.get("history", [])
         if not history:

@@ -93,11 +93,21 @@ class ProjectWorkspace:
                 return "\n".join(f"  - {cmd}" for cmd in cmds)
             return f"  - {cmds}"
 
+        if next_round == 1:
+            workflow_steps = f'''1. 分析本轮目标，开始修改代码。
+2. 执行【编译命令】。若失败，请定位日志并修复代码，然后再次编译，直到编译成功或你认为无法继续。
+3. 执行【部署命令】。
+4. 执行【测试命令】。'''
+        else:
+            workflow_steps = f'''1. 仔细阅读前情提要。从上一轮失败的地方（如编译报错、测试不通过等）开始接手，继续修改和修复代码。
+2. 如果上一轮是编译失败，修复代码后继续执行【编译命令】；如果是部署或测试失败，确保重新编译部署。若再次失败，请定位日志并修复代码，循环直到成功或无法继续。
+3. 确保最终执行并验证【测试命令】。'''
+
         prompt = f'''你是 Trae Solo Coder，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
 
 【项目上下文】
 代码路径：{config.get('project_path', '/')}
-本轮目标：{config.get('goal', '无')}
+本轮总体目标：{config.get('goal', '无')}
 
 编译命令（请按顺序执行）：
 {_format_cmds(config.get('build_commands', []))}
@@ -114,11 +124,9 @@ class ProjectWorkspace:
 {history_text}
 
 【你的工作流（严格遵守）】
-1. 分析前情提要，根据本轮目标，修改代码。
-2. 执行【编译命令】。若失败，尝试定位并修复代码重试（建议不超过3次）。
-3. 执行【部署命令】。
-4. 执行【测试命令】。
-5. 无论测试成功还是失败，**立刻停止工作**。绝不允许自行开启下一轮或进入死循环！
+{workflow_steps}
+5. 在本轮修改代码并测试（无论成功与否）后，**必须将你修改的所有代码提交一个 git commit**。请根据你修改的内容自行起一个合适的 commit message。
+6. 无论测试成功还是失败，**立刻停止工作**。绝不允许自行开启下一轮或进入死循环！
 
 【本轮输出要求（极其重要）】
 工作停止后，你必须将本轮的执行结果，严格按照以下 JSON 格式，**直接保存到文件** `{history_json_target}` 中（请直接将内容写入文件，不要只输出在对话框里）：
@@ -129,7 +137,7 @@ class ProjectWorkspace:
   "status": "SUCCEEDED或FAILED",
   "bugs_found": "遇到了什么问题，简要描述",
   "fixes_applied": "你是怎么解决的",
-  "commits": "提交记录（如果有）",
+  "commits": "本轮你提交的 git commit hash 和 commit message",
   "token_usage": {{"prompt": 0, "completion": 0, "total": 0}}
 }}
 ```
