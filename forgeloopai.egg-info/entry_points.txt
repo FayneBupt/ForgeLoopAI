@@ -1,0 +1,2 @@
+[console_scripts]
+forgeloop = forgeloop.cli:main

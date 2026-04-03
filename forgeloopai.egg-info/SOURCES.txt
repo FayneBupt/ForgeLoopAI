@@ -1,0 +1,12 @@
+README.md
+pyproject.toml
+forgeloop/__init__.py
+forgeloop/cli.py
+forgeloop/models.py
+forgeloop/project_ops.py
+forgeloop/storage.py
+forgeloopai.egg-info/PKG-INFO
+forgeloopai.egg-info/SOURCES.txt
+forgeloopai.egg-info/dependency_links.txt
+forgeloopai.egg-info/entry_points.txt
+forgeloopai.egg-info/top_level.txt
