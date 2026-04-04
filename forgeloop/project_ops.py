@@ -20,14 +20,18 @@ class ProjectWorkspace:
                 "message": f"项目 {name} 已存在，不能重复初始化"
             }
         pdir.mkdir(parents=True, exist_ok=True)
-        history_dir = pdir / 'history'
-        history_dir.mkdir(exist_ok=True)
 
         config_path = pdir / 'config.json'
         config = {
             "project_name": name,
             "project_path": "/path/to/your/project_source",
             "goal": "在这里填写本次开发或修复的目标，例如：修复湖仓读取 Null 指针异常",
+            "max_tries_per_round": 3,
+            "history_context": [],
+            "log_directories": [
+                "/path/to/Doris-Dev-Runner/log/fe",
+                "/path/to/Doris-Dev-Runner/log/be"
+            ],
             "build_commands": [
                 "echo '执行编译操作...'",
                 "sudo docker exec <YOUR_DOCKER_CONTAINER> /bin/bash -lc 'cd /path/to/project_source && bash build.sh --be -j8'"
@@ -35,7 +39,8 @@ class ProjectWorkspace:
             "stop_commands": [
                 "cd /path/to/Lakehouse-Sandbox-Cluster && sudo docker-compose down || true",
                 "cd /path/to/Doris-Dev-Runner && ./stop_doris.sh /path/to/project_source/output || true",
-                "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep <YOUR_USERNAME> >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true"
+                "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep <YOUR_USERNAME> >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true",
+                "ps -ef | grep doris | grep <YOUR_USERNAME> | grep -v grep | awk '{print $2}' | xargs -r kill -9 || true"
             ],
             "clean_commands": [
                 "echo '清理历史日志和元数据，确保干净启动...'",
@@ -94,7 +99,7 @@ class ProjectWorkspace:
             "config_file": str(config_path)
         }
 
-    def push_project(self, name: str) -> Dict[str, Any]:
+    def generate_mission(self, name: str) -> Dict[str, Any]:
         pdir = self.project_dir(name)
         if not pdir.exists():
             return {"status": "error", "message": f"项目 {name} 不存在，请先执行 init"}
@@ -105,37 +110,20 @@ class ProjectWorkspace:
             
         config = self._read_json(config_path)
         
-        history_dir = pdir / 'history'
-        history_dir.mkdir(exist_ok=True)
-        
-        # 扫描 history/*.json，确定当前是第几轮
-        round_files = list(history_dir.glob("round_*.json"))
-        history_data = []
-        for rf in sorted(round_files, key=lambda x: self._extract_round_num(x.name)):
-            try:
-                data = self._read_json(rf)
-                r_num = data.get("round", self._extract_round_num(rf.name))
-                history_data.append((r_num, data))
-            except Exception:
-                pass
-                
-        history_data.sort(key=lambda x: x[0])
-        next_round = len(history_data) + 1
-        
+        history_context = config.get("history_context", [])
         history_text = ""
-        if not history_data:
-            history_text = "- 无历史轮次，这是第 1 轮。"
+        if not history_context:
+            history_text = "- 无历史轮次，这是你第一次接手该任务。"
         else:
             lines = []
-            for r_num, data in history_data:
+            for idx, data in enumerate(history_context):
+                r_num = data.get("round", idx + 1)
                 status = data.get("status", "UNKNOWN")
                 bugs = data.get("bugs_found", "无")
                 fixes = data.get("fixes_applied", "无")
-                lines.append(f"- 第 {r_num} 轮 | 状态: {status} | Bugs: {bugs} | Fixes: {fixes}")
+                lines.append(f"- 历史战役 {r_num} | 状态: {status} | Bugs: {bugs} | Fixes: {fixes}")
             history_text = "\n".join(lines)
             
-        history_json_target = str((history_dir / f"round_{next_round}.json").absolute())
-
         def _format_cmds(cmds: Any) -> str:
             if not cmds:
                 return "无"
@@ -143,20 +131,55 @@ class ProjectWorkspace:
                 return "\n".join(f"  - {cmd}" for cmd in cmds)
             return f"  - {cmds}"
 
-        if next_round == 1:
-            workflow_steps = f'''1. 分析本轮目标，开始修改代码。
-2. 执行【编译命令】。若失败，请定位日志并修复代码，然后再次编译，直到编译成功或你认为无法继续。
-3. 执行【停止服务命令】。确保旧服务已停止。
-4. 执行【清理环境命令】。删除历史日志，排除干扰。
-5. 执行【部署服务命令】。拉起新编译的服务。
-6. 执行【部署后检查命令】。确认服务正常拉起，若有报错请立刻查看新生成的日志并尝试修复。
-7. 执行【环境测试命令】。确保系统具备验证 Bug 的基础能力（如成功创建建表、导入数据等）。
-8. 执行【核心验证命令】。跑业务测试用例，验证你的修复或开发是否真正满足了本轮目标。'''
+        # Dynamically generate the && chained command example based on config
+        example_cmds = []
+        for key in ['build_commands', 'stop_commands', 'clean_commands', 'deploy_commands', 'check_commands', 'test_commands', 'verify_commands']:
+            cmds = config.get(key, [])
+            if cmds:
+                example_cmds.extend(cmds)
+        
+        if example_cmds:
+            chained_example = " && ".join(example_cmds)
         else:
-            workflow_steps = f'''1. 仔细阅读前情提要。从上一轮失败的地方（如编译报错、测试不通过等）开始接手，继续修改和修复代码。
-2. 如果上一轮是编译失败，修复代码后继续执行【编译命令】；如果是部署或测试失败，确保重新编译。
-3. 依次执行【停止服务命令】、【清理环境命令】、【部署服务命令】、【部署后检查命令】，确保服务重新干净拉起。若再次失败，请定位日志并修复代码，循环直到成功或无法继续。
-4. 确保最终执行并验证【环境测试命令】和【核心验证命令】。'''
+            chained_example = "bash build.sh && bash stop.sh && bash clean.sh && bash deploy.sh && bash check.sh && bash test.sh && bash verify.sh"
+
+        loop_definition = f"【完整测试闭环】包含以下严格顺序：编译 -> 停止服务 -> 清理环境 -> 部署服务 -> 部署后检查 -> 环境测试 -> 核心验证。\n（提示：为了减少网络交互轮数，你可以使用 `&&` 将所有阶段的命令拼接成一行，一次性交给终端执行。例如：\n`{chained_example}`）"
+        max_tries = config.get('max_tries_per_round', 3)
+
+        if not history_context:
+            workflow_steps = f'''1. {loop_definition}
+2. **切勿急着修改代码！** 请先直接执行一次【完整测试闭环】。在大多数情况下，它会在“核心验证”或某个阶段失败，你的首要任务是拿到这个最原始的报错日志。
+3. **分析与修改**：根据第 2 步的报错日志（请善用前面的日志排查指引），结合本轮总体目标，开始修改源码。
+4. **验证修复**：代码修改完成后，再次执行【完整测试闭环】。
+5. **重试与意外中止机制**：如果依然报错，你可以继续“查看日志 -> 修改代码 -> 执行完整闭环”。但请注意：
+   - 在本次对话中，你最多只能进行 **{max_tries} 次** 这样的尝试。
+   - 如果遇到**意外情况**（例如：无法获取核心报错日志、环境严重卡死、反复出现相同的不可理喻的错误、缺乏有效反馈继续推进），你必须**立刻主动中止**。
+6. 满足以下任一条件时必须停止工作：
+   - 成功通过了“核心验证”：输出 SUCCEEDED 报告。
+   - 达到了 {max_tries} 次重试上限：输出 FAILED 报告。
+   - 触发了意外中止机制：输出 FAILED 报告，并在 bugs_found 中详细描述这个阻碍你继续的“意外情况”。'''
+        else:
+            workflow_steps = f'''1. 仔细阅读【前情提要】，了解前人遗留的问题和历史尝试。
+2. {loop_definition}
+3. **第一步绝不允许直接修改代码！** 你必须先无脑执行一次【完整测试闭环】。因为接手时环境状态未知，你必须通过这次执行，拿到属于你当前视角的、最新鲜的报错日志。
+4. **分析与修改**：拿到最新报错后，结合前人的教训，开始修改源码。
+5. **验证修复**：代码修改完成后，重新执行【完整测试闭环】。
+6. **重试与意外中止机制**：如果依然报错，你可以继续“查看日志 -> 修改代码 -> 执行完整闭环”。但请注意：
+   - 在本次对话中，你最多只能进行 **{max_tries} 次** 这样的尝试。
+   - 如果遇到**意外情况**（例如：无法获取核心报错日志、环境严重卡死、反复出现相同的不可理喻的错误、缺乏有效反馈继续推进），你必须**立刻主动中止**。
+7. 满足以下任一条件时必须停止工作：
+   - 成功通过了“核心验证”：输出 SUCCEEDED 报告。
+   - 达到了 {max_tries} 次重试上限：输出 FAILED 报告。
+   - 触发了意外中止机制：输出 FAILED 报告，并在 bugs_found 中详细描述这个阻碍你继续的“意外情况”。'''
+
+        log_dirs = config.get('log_directories', [])
+        if log_dirs:
+            log_guide = "【日志排查指引（重要）】\n如果在任何阶段遇到报错（例如 `check` 或 `verify` 阶段抛出异常），你需要自主查看以下日志目录下的文件定位问题：\n"
+            for d in log_dirs:
+                log_guide += f"- {d} (主要查看 fe.log, fe.out, fe.warn.log, be.INFO, be.out, be.WARNING 等)\n"
+            log_guide += "（提示：善用 `grep -C 10 -i \"Exception\" <log_file>` 或直接读取文件尾部获取堆栈信息。）\n"
+        else:
+            log_guide = ""
 
         prompt = f'''你是 Trae Solo Coder，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
 
@@ -164,6 +187,7 @@ class ProjectWorkspace:
 代码路径：{config.get('project_path', '/')}
 本轮总体目标：{config.get('goal', '无')}
 
+{log_guide}
 编译命令（请按顺序执行）：
 {_format_cmds(config.get('build_commands', []))}
 
@@ -186,8 +210,6 @@ class ProjectWorkspace:
 {_format_cmds(config.get('verify_commands', []))}
 
 【前情提要】
-当前是第 {next_round} 轮。
-历史记录如下：
 {history_text}
 
 【你的工作流（严格遵守）】
@@ -197,12 +219,12 @@ class ProjectWorkspace:
 - 在本轮修改代码并测试（无论成功与否）后，**必须将你修改的所有代码提交一个 git commit**。请根据你修改的内容自行起一个合适的 commit message。
 - 无论测试成功还是失败，**立刻停止工作**。绝不允许自行开启下一轮或进入死循环！
 
-【本轮输出要求（极其重要）】
-工作停止后，你必须将本轮的执行结果，严格按照以下 JSON 格式，**直接保存到文件** `{history_json_target}` 中（请直接将内容写入文件，不要只输出在对话框里）：
+【任务输出与交接要求（极其重要）】
+在结束本次战役时，你可以正常总结你的修复思路和结论。但**在回复的最后，你必须严格附上以下 JSON 格式的代码块**，以便系统进行自动收集和跨会话记忆接力（请确保只包含这一个合法的 JSON 块，并用 ```json 包裹）：
 
 ```json
 {{
-  "round": {next_round},
+  "round": {len(history_context) + 1},
   "status": "SUCCEEDED或FAILED",
   "bugs_found": "遇到了什么问题，简要描述",
   "fixes_applied": "你是怎么解决的",
@@ -211,21 +233,16 @@ class ProjectWorkspace:
 }}
 ```
 
-写完文件后，请直接对我说“第 {next_round} 轮执行完毕，报告已生成”，并结束当前对话。
+总结并输出上述 JSON 后，请告知我“本次任务执行完毕，报告已生成”，并请将该 JSON 内容保存到当前配置文件所在的目录下（即 `{pdir}` 目录），命名为 `history-<YYYYMMDDHHMMSS>.json`（请替换为当前的实际时间戳），然后结束当前对话。人类在 Review 后会自行决定是否将其纳入下一轮的上下文中。
 '''
 
-        prompt_path = pdir / f'prompt_round_{next_round}.md'
+        prompt_path = pdir / 'mission.md'
         prompt_path.write_text(prompt, encoding='utf-8')
-        
-        # 记录一个正在进行中的状态标记
-        pending_marker = history_dir / f'round_{next_round}.pending'
-        pending_marker.touch()
         
         return {
             "status": "success",
-            "message": f"第 {next_round} 轮 Prompt 已生成",
-            "prompt_file": str(prompt_path),
-            "next_round": next_round
+            "message": f"任务执行清单 mission.md 已生成",
+            "prompt_file": str(prompt_path)
         }
 
     def rm_project(self, name: str) -> Dict[str, Any]:
@@ -240,6 +257,53 @@ class ProjectWorkspace:
         except Exception as e:
             return {"status": "error", "message": f"删除项目 {name} 失败: {str(e)}"}
 
+    def compile_scripts(self, name: str) -> Dict[str, Any]:
+        pdir = self.project_dir(name)
+        if not pdir.exists():
+            return {"status": "error", "message": f"项目 {name} 不存在"}
+            
+        config_path = pdir / 'config.json'
+        if not config_path.exists():
+            return {"status": "error", "message": f"找不到 config.json"}
+            
+        config = self._read_json(config_path)
+        scripts_dir = pdir / 'scripts'
+        scripts_dir.mkdir(exist_ok=True)
+        
+        stage_map = {
+            'build': 'build_commands',
+            'stop': 'stop_commands',
+            'clean': 'clean_commands',
+            'deploy': 'deploy_commands',
+            'check': 'check_commands',
+            'test': 'test_commands',
+            'verify': 'verify_commands'
+        }
+        
+        import stat
+        for stage, key in stage_map.items():
+            commands = config.get(key, [])
+            if not commands:
+                continue
+                
+            # If it's already a single bash script call, skip compiling
+            if len(commands) == 1 and commands[0].startswith(f"bash ") and commands[0].endswith(f"{stage}.sh"):
+                continue
+                
+            script_path = scripts_dir / f"{stage}.sh"
+            with open(script_path, 'w', encoding='utf-8') as f:
+                f.write("#!/bin/bash\nset -e\n")
+                for cmd in commands:
+                    f.write(f"{cmd}\n")
+            # add executable permission
+            script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
+            
+            # replace config commands with script execution
+            config[key] = [f"bash {script_path}"]
+            
+        self._write_json(config_path, config)
+        return {"status": "success", "message": f"项目 {name} 的命令已成功编译并提取到 scripts 目录下！"}
+
     def project_status(self, name: str = None) -> Dict[str, Any]:
         if name:
             projects = [self.project_dir(name)]
@@ -249,71 +313,29 @@ class ProjectWorkspace:
             projects = [p for p in self.projects_root.iterdir() if p.is_dir()]
             
         results = []
+        import datetime
         for pdir in projects:
             pname = pdir.name
-            history_dir = pdir / 'history'
-            round_files = list(history_dir.glob("round_*.json")) if history_dir.exists() else []
             
-            history_data = []
-            for rf in round_files:
-                try:
-                    data = self._read_json(rf)
-                    r_num = data.get("round", self._extract_round_num(rf.name))
-                    history_data.append((r_num, data))
-                except Exception:
-                    pass
-            history_data.sort(key=lambda x: x[0])
-            
-            total_tokens = sum(
-                int(data.get("token_usage", {}).get("total", 0))
-                for _, data in history_data
-            )
-            
-            last_status = "UNKNOWN"
-            current_rounds = len(history_data)
-            
-            # 检查是否有正在进行的下一轮
-            pending_files = list(history_dir.glob("round_*.pending")) if history_dir.exists() else []
-            if pending_files:
-                # 找到最大的 pending 轮次
-                pending_nums = [self._extract_round_num(pf.name) for pf in pending_files]
-                max_pending = max(pending_nums)
-                if max_pending > current_rounds:
-                    current_rounds = max_pending - 1
-                    last_status = f"RUNNING (Round {max_pending})"
-                elif history_data:
-                    last_status = history_data[-1][1].get("status", "UNKNOWN")
-            elif history_data:
-                last_status = history_data[-1][1].get("status", "UNKNOWN")
-                
+            # get creation time of config.json
+            config_path = pdir / 'config.json'
+            if config_path.exists():
+                stat_info = config_path.stat()
+                created_at = datetime.datetime.fromtimestamp(stat_info.st_mtime).strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                created_at = "UNKNOWN"
+
+            mission_path = pdir / 'mission.md'
+            mission_path_str = str(mission_path) if mission_path.exists() else "Not generated"
+
             results.append({
                 "project": pname,
-                "rounds": current_rounds,
-                "total_tokens": total_tokens,
-                "last_status": last_status
+                "created_at": created_at,
+                "config_path": str(config_path),
+                "mission_path": mission_path_str
             })
             
         return {"status": "success", "projects": results}
-
-    def show_project(self, name: str) -> Dict[str, Any]:
-        pdir = self.project_dir(name)
-        if not pdir.exists():
-            return {"status": "error", "message": f"项目 {name} 不存在"}
-            
-        history_dir = pdir / 'history'
-        round_files = list(history_dir.glob("round_*.json")) if history_dir.exists() else []
-        
-        history_data = []
-        for rf in round_files:
-            try:
-                data = self._read_json(rf)
-                r_num = data.get("round", self._extract_round_num(rf.name))
-                history_data.append((r_num, data))
-            except Exception:
-                pass
-        history_data.sort(key=lambda x: x[0])
-        
-        return {"status": "success", "project": name, "history": [h[1] for h in history_data]}
 
     def run_stage(self, name: str, stage: str) -> int:
         pdir = self.project_dir(name)
