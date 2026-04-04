@@ -1,0 +1,62 @@
+{
+  "project_name": "fix-doris-bug-template",
+  "project_path": "/path/to/your/doris_source_code",
+  "goal": "在这里填写本次开发或修复的目标，例如：修复湖仓读取 Paimon 的 Null 指针异常",
+  "build_commands": [
+    "echo '执行编译操作...'",
+    "sudo docker exec <YOUR_DOCKER_CONTAINER> /bin/bash -lc 'cd /path/to/doris_source_code && export MAVEN_HOME=~/file/apache-maven-3.9.9 && export PATH=$MAVEN_HOME/bin:$PATH && SKIP_CONTRIB_SUBMODULE_UPDATE=1 bash build.sh --be -j8'"
+  ],
+  "stop_commands": [
+    "cd /path/to/Lakehouse-Sandbox-Cluster && sudo docker-compose down || true",
+    "cd /path/to/Doris-Dev-Runner && ./stop_doris.sh /path/to/doris_source_code/output || true",
+    "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep <YOUR_USERNAME> >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true"
+  ],
+  "clean_commands": [
+    "echo '清理历史日志和元数据，确保干净启动...'",
+    "rm -rf /path/to/Doris-Dev-Runner/log/fe/*",
+    "rm -rf /path/to/Doris-Dev-Runner/log/be/*",
+    "rm -rf /path/to/doris_source_code/output/fe/doris-meta/*",
+    "rm -rf /path/to/doris_source_code/output/be/storage/*"
+  ],
+  "deploy_commands": [
+    "cd /path/to/Lakehouse-Sandbox-Cluster && sudo docker-compose up -d",
+    "echo '等待 Hive Metastore (9083) 启动...'",
+    "timeout 120s bash -c 'until sudo docker exec paimon-hive-metastore bash -c \"</dev/tcp/127.0.0.1/9083\" 2>/dev/null; do sleep 3; done'",
+    "cd /path/to/Lakehouse-Sandbox-Cluster && sudo docker cp init.sql paimon-flink-jobmanager:/tmp/init.sql && sudo docker exec paimon-flink-jobmanager ./bin/sql-client.sh -f /tmp/init.sql",
+    "grep -q 'paimon-namenode' /etc/hosts || echo '127.0.0.1 paimon-namenode paimon-datanode paimon-hive-metastore' | sudo tee -a /etc/hosts",
+    "cd /path/to/Doris-Dev-Runner && ./start_doris.sh /path/to/doris_source_code/output"
+  ],
+  "check_commands": [
+    "echo '等待 Doris FE(9040) 与 BE(9060) 端口就绪，最长等待 120 秒...'",
+    "timeout 120s bash -c 'until nc -z 127.0.0.1 9040 2>/dev/null; do echo \"等待 FE...\"; sleep 3; done'",
+    "timeout 120s bash -c 'until nc -z 127.0.0.1 9060 2>/dev/null; do echo \"等待 BE...\"; sleep 3; done'",
+    "echo '服务端口已打开，尝试注册 BE 节点...'",
+    "mysql -h 127.0.0.1 -P 9040 -uroot -e \"ALTER SYSTEM ADD BACKEND '127.0.0.1:9060';\" 2>/dev/null || true",
+    "echo '检查 FE/BE 进程心跳状态 (Alive: true)...'",
+    "timeout 120s bash -c 'until mysql -h 127.0.0.1 -P 9040 -uroot -e \"SHOW FRONTENDS;\" 2>/dev/null | grep -q \"true\"; do echo \"等待 FE 心跳正常...\"; sleep 3; done'",
+    "timeout 120s bash -c 'until mysql -h 127.0.0.1 -P 9040 -uroot -e \"SHOW BACKENDS;\" 2>/dev/null | grep -q \"true\"; do echo \"等待 BE 心跳正常...\"; sleep 3; done'",
+    "echo '心跳检查通过！验证 BE 计算组是否真正 Ready (等待可用 Backends)...'",
+    "timeout 120s bash -c 'until mysql -h 127.0.0.1 -P 9040 -uroot -e \"SELECT 1;\" 2>/dev/null | grep -q \"1\"; do echo \"等待计算节点完全初始化...\"; sleep 3; done'",
+    "echo 'BE 计算节点完全就绪！'",
+    "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SHOW FRONTENDS\\G; SHOW BACKENDS\\G;\"",
+    "echo '输出最新启动日志供 AI 参考...'",
+    "tail -n 20 /path/to/Doris-Dev-Runner/log/fe/fe.log",
+    "tail -n 20 /path/to/Doris-Dev-Runner/log/be/be.INFO"
+  ],
+  "test_commands": [
+    "echo '==== 开始执行环境测试 (Test) ===='",
+    "echo '[Test 1/3] 重建 Catalog (paimon_hive_catalog)...'",
+    "mysql -h 127.0.0.1 -P 9040 -uroot -e \"DROP CATALOG IF EXISTS paimon_hive_catalog; CREATE CATALOG paimon_hive_catalog PROPERTIES('type'='paimon','paimon.catalog.type'='hms','hive.metastore.uris'='thrift://127.0.0.1:9083','warehouse'='hdfs://127.0.0.1:8020/paimon/warehouse');\"",
+    "echo '[Test 2/3] 验证表结构是否可查...'",
+    "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SWITCH paimon_hive_catalog; USE doris_paimon_db; SHOW TABLES;\"",
+    "echo '[Test 3/3] 验证预置数据是否能正常读取...'",
+    "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SWITCH paimon_hive_catalog; USE doris_paimon_db; SELECT * FROM doris_insert_test ORDER BY id LIMIT 10;\"",
+    "echo '==== 环境测试完毕，具备回归验证条件 ===='"
+  ],
+  "verify_commands": [
+    "echo '==== 开始核心回归验证 (Verify) ===='",
+    "echo '[Verify 1/1] 执行 INSERT INTO 操作并查询验证结果...'",
+    "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SWITCH paimon_hive_catalog; USE doris_paimon_db; INSERT INTO doris_insert_test VALUES (1001,'from_doris_insert_case','2026-04-03'); SELECT * FROM doris_insert_test ORDER BY id DESC LIMIT 20;\"",
+    "echo '==== 核心回归验证完毕 ===='"
+  ]
+}
