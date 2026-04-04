@@ -1,0 +1,1 @@
+- **BE 节点崩溃排查（Core Dump）**：如果遇到 Doris BE 节点进程意外挂掉、假死或心跳丢失的情况，请不要只看 `be.INFO`。你应当**优先查看 `be.out` 日志的最后 100 行**，通常该处会打印导致进程崩溃的 Core Dump 堆栈信息（如 Segmentation fault 或 Fatal Error），这是定位底层 C++ 致命错误最核心的线索。
