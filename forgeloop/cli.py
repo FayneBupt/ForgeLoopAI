@@ -24,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     show_cmd = sub.add_parser('show', help='展示指定项目的所有历史轮次详情')
     show_cmd.add_argument('name', help='项目名称')
 
+    run_cmd = sub.add_parser('run', help='测试执行 config.json 中配置的各个生命周期阶段（例如 build/stop/deploy），或者执行 all 跑通全流程')
+    run_cmd.add_argument('name', help='项目名称')
+    run_cmd.add_argument('stage', choices=['build', 'stop', 'clean', 'deploy', 'check', 'test', 'verify', 'all', 'all-no-build'], help='要测试的生命周期阶段，或者使用 all 按序执行全部，all-no-build 则跳过编译')
+
     return parser
 
 
@@ -47,6 +51,11 @@ def main() -> None:
         result = workspace.project_status(args.name)
     elif args.command == 'show':
         result = workspace.show_project(args.name)
+    elif args.command == 'run':
+        # run 是直接打印日志到终端，它返回的是执行的状态
+        import sys
+        code = workspace.run_stage(args.name, args.stage)
+        sys.exit(code)
     else:
         raise RuntimeError('unknown command')
 
