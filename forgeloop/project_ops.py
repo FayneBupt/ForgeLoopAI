@@ -29,23 +29,23 @@ class ProjectWorkspace:
             "max_tries_per_round": 3,
             "history_context": [],
             "log_directories": [
-                "/path/to/Doris-Dev-Runner/log/fe",
-                "/path/to/Doris-Dev-Runner/log/be"
+                "/path/to/project_source/output/fe/log",
+                "/path/to/project_source/output/be/log"
             ],
             "build_commands": [
                 "echo '执行编译操作...'",
-                "sudo docker exec <YOUR_DOCKER_CONTAINER> /bin/bash -lc 'cd /path/to/project_source && bash build.sh --be -j8'"
+                "docker exec <YOUR_DOCKER_CONTAINER> /bin/bash -lc 'cd /path/to/project_source && bash build.sh --be -j8'"
             ],
             "stop_commands": [
-                "cd /path/to/Lakehouse-Sandbox-Cluster && sudo docker-compose down || true",
+                "cd /path/to/Lakehouse-Sandbox-Cluster && docker-compose down || true",
                 "cd /path/to/Doris-Dev-Runner && ./stop_doris.sh /path/to/project_source/output || true",
                 "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep <YOUR_USERNAME> >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true",
                 "ps -ef | grep doris | grep <YOUR_USERNAME> | grep -v grep | awk '{print $2}' | xargs -r kill -9 || true"
             ],
             "clean_commands": [
                 "echo '清理历史日志和元数据，确保干净启动...'",
-                "rm -rf /path/to/Doris-Dev-Runner/log/fe/*",
-                "rm -rf /path/to/Doris-Dev-Runner/log/be/*",
+                "rm -rf /path/to/project_source/output/fe/log/*",
+                "rm -rf /path/to/project_source/output/be/log/*",
                 "rm -rf /path/to/project_source/output/fe/doris-meta/*",
                 "rm -rf /path/to/project_source/output/be/storage/*"
             ],
@@ -55,7 +55,10 @@ class ProjectWorkspace:
                 "timeout 120s bash -c 'until sudo docker exec paimon-hive-metastore bash -c \"</dev/tcp/127.0.0.1/9083\" 2>/dev/null; do sleep 3; done'",
                 "cd /path/to/Lakehouse-Sandbox-Cluster && sudo docker cp init.sql paimon-flink-jobmanager:/tmp/init.sql && sudo docker exec paimon-flink-jobmanager ./bin/sql-client.sh -f /tmp/init.sql",
                 "grep -q 'paimon-namenode' /etc/hosts || echo '127.0.0.1 paimon-namenode paimon-datanode paimon-hive-metastore' | sudo tee -a /etc/hosts",
-                "cd /path/to/Doris-Dev-Runner && ./start_doris.sh /path/to/project_source/output"
+                "echo '启动 Doris FE...'",
+                "cd /path/to/project_source/output/fe && export JAVA_HOME=\"/path/to/Doris-Dev-Runner/jdk17\" && export PATH=\"$JAVA_HOME/bin:$PATH\" && unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && bash bin/start_fe.sh --daemon",
+                "echo '启动 Doris BE...'",
+                "cd /path/to/project_source/output/be && export JAVA_HOME=\"/path/to/Doris-Dev-Runner/jdk17\" && export PATH=\"$JAVA_HOME/bin:$PATH\" && unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && bash bin/start_be.sh --daemon"
             ],
             "check_commands": [
                 "echo '等待 Doris FE(9040) 与 BE(9060) 端口就绪，最长等待 120 秒...'",
@@ -71,8 +74,8 @@ class ProjectWorkspace:
                 "echo 'BE 计算节点完全就绪！'",
                 "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SHOW FRONTENDS\\G; SHOW BACKENDS\\G;\"",
                 "echo '输出最新启动日志供 AI 参考...'",
-                "tail -n 20 /path/to/Doris-Dev-Runner/log/fe/fe.log",
-                "tail -n 20 /path/to/Doris-Dev-Runner/log/be/be.INFO"
+                "tail -n 20 /path/to/project_source/output/fe/log/fe.log",
+                "tail -n 20 /path/to/project_source/output/be/log/be.INFO"
             ],
             "test_commands": [
                 "echo '==== 开始执行环境测试 (Test) ===='",
@@ -181,6 +184,13 @@ class ProjectWorkspace:
         else:
             log_guide = ""
 
+        knowledge_path = self.root.parent / 'knowledge.md'
+        knowledge_guide = ""
+        if knowledge_path.exists():
+            knowledge_text = knowledge_path.read_text(encoding='utf-8').strip()
+            if knowledge_text:
+                knowledge_guide = f"【开发与调试注意点（非常重要）】\n{knowledge_text}\n"
+
         prompt = f'''你是 Trae Solo Coder，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
 
 【项目上下文】
@@ -188,6 +198,7 @@ class ProjectWorkspace:
 本轮总体目标：{config.get('goal', '无')}
 
 {log_guide}
+{knowledge_guide}
 编译命令（请按顺序执行）：
 {_format_cmds(config.get('build_commands', []))}
 
