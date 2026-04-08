@@ -359,15 +359,23 @@ class ProjectWorkspace:
                     name = case.get('name', f'Test {i}')
                     desc = case.get('description', '')
                     sql = case.get('sql', '')
+                    command = case.get('command', '')
                     
                     f.write("echo \"----------------------------------------\"\n")
                     f.write(f"echo \"👉 [{name}]\"\n")
                     f.write(f"echo \"📝 描述: {desc}\"\n")
-                    f.write(f"if mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\"; then\n")
+                    if command:
+                        f.write(f"if result=$({command} 2>&1); then\n")
+                    else:
+                        f.write(f"if result=$(mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\" 2>&1); then\n")
                     f.write("    echo \"✅ 结果: SUCCESS\"\n")
+                    f.write("    echo \"📊 输出:\"\n")
+                    f.write("    echo \"$result\"\n")
                     f.write("    ((success++))\n")
                     f.write("else\n")
                     f.write("    echo \"❌ 结果: FAILED\"\n")
+                    f.write("    echo \"📉 错误输出:\"\n")
+                    f.write("    echo \"$result\"\n")
                     f.write("    ((fail++))\n")
                     f.write("fi\n\n")
                     
@@ -395,15 +403,23 @@ class ProjectWorkspace:
                     name = case.get('name', f'Case {i}')
                     desc = case.get('description', '')
                     sql = case.get('sql', '')
+                    command = case.get('command', '')
                     
                     f.write("echo \"----------------------------------------\"\n")
                     f.write(f"echo \"👉 [{name}]\"\n")
                     f.write(f"echo \"📝 描述: {desc}\"\n")
-                    f.write(f"if mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\"; then\n")
+                    if command:
+                        f.write(f"if result=$({command} 2>&1); then\n")
+                    else:
+                        f.write(f"if result=$(mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\" 2>&1); then\n")
                     f.write("    echo \"✅ 结果: SUCCESS\"\n")
+                    f.write("    echo \"📊 输出:\"\n")
+                    f.write("    echo \"$result\"\n")
                     f.write("    ((success++))\n")
                     f.write("else\n")
                     f.write("    echo \"❌ 结果: FAILED\"\n")
+                    f.write("    echo \"📉 错误输出:\"\n")
+                    f.write("    echo \"$result\"\n")
                     f.write("    ((fail++))\n")
                     f.write("fi\n\n")
                     
