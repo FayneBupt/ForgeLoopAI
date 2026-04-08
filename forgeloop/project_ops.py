@@ -39,8 +39,8 @@ class ProjectWorkspace:
             "stop_commands": [
                 "cd /path/to/Lakehouse-Sandbox-Cluster && docker-compose down || true",
                 "cd /path/to/Doris-Dev-Runner && ./stop_doris.sh /path/to/project_source/output || true",
-                "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep <YOUR_USERNAME> >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true",
-                "ps -ef | grep doris | grep <YOUR_USERNAME> | grep -v grep | awk '{print $2}' | xargs -r kill -9 || true"
+                "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep lvliangliang >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true",
+                "ps -ef | grep doris | grep lvliangliang | grep -v grep | awk '{print $2}' | xargs -r kill -9 || true"
             ],
             "clean_commands": [
                 "echo '清理历史日志和元数据，确保干净启动...'",
@@ -87,11 +87,17 @@ class ProjectWorkspace:
                 "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SWITCH paimon_hive_catalog; USE doris_paimon_db; SELECT * FROM doris_insert_test ORDER BY id LIMIT 10;\"",
                 "echo '==== 环境测试完毕，具备回归验证条件 ===='"
             ],
-            "verify_commands": [
-                "echo '==== 开始核心回归验证 (Verify) ===='",
-                "echo '[Verify 1/1] 执行 INSERT INTO 操作并查询验证结果...'",
-                "mysql -h 127.0.0.1 -P 9040 -uroot -e \"SWITCH paimon_hive_catalog; USE doris_paimon_db; INSERT INTO doris_insert_test VALUES (1001,'from_doris_insert_case','2026-04-03'); SELECT * FROM doris_insert_test ORDER BY id DESC LIMIT 20;\"",
-                "echo '==== 核心回归验证完毕 ===='"
+            "verify_cases": [
+                {
+                    "name": "Case 1: 开启 Paimon JNI Writer",
+                    "description": "测试 enable_paimon_jni_writer=true 时的写入和读取",
+                    "sql": "SET enable_paimon_jni_writer=true; SWITCH paimon_hive_catalog; USE doris_paimon_db; INSERT INTO doris_insert_test VALUES (1001,'from_doris_insert_case_jni_true','2026-04-03'); SELECT * FROM doris_insert_test ORDER BY id DESC LIMIT 20;"
+                },
+                {
+                    "name": "Case 2: 关闭 Paimon JNI Writer",
+                    "description": "测试 enable_paimon_jni_writer=false 时的写入和读取",
+                    "sql": "SET enable_paimon_jni_writer=false; SWITCH paimon_hive_catalog; USE doris_paimon_db; INSERT INTO doris_insert_test VALUES (1002,'from_doris_insert_case_jni_false','2026-04-03'); SELECT * FROM doris_insert_test ORDER BY id DESC LIMIT 20;"
+                }
             ]
         }
         self._write_json(config_path, config)
@@ -101,6 +107,14 @@ class ProjectWorkspace:
             "project_dir": str(pdir),
             "config_file": str(config_path)
         }
+
+    def _format_cases_for_prompt(self, cases: List[Dict[str, Any]]) -> str:
+        if not cases:
+            return "无"
+        lines = []
+        for i, c in enumerate(cases, 1):
+            lines.append(f"  - [Case {i}] {c.get('name', '未命名')}: {c.get('description', '无描述')}")
+        return "\n".join(lines)
 
     def generate_mission(self, name: str) -> Dict[str, Any]:
         pdir = self.project_dir(name)
@@ -136,15 +150,28 @@ class ProjectWorkspace:
 
         # Dynamically generate the && chained command example based on config
         example_cmds = []
-        for key in ['build_commands', 'stop_commands', 'clean_commands', 'deploy_commands', 'check_commands', 'test_commands', 'verify_commands']:
+        for key in ['build_commands', 'stop_commands', 'clean_commands', 'deploy_commands', 'check_commands', 'test_commands']:
             cmds = config.get(key, [])
             if cmds:
                 example_cmds.extend(cmds)
         
+        # Add verify_cases to example cmds
+        verify_cases = config.get('verify_cases', [])
+        if verify_cases:
+            example_cmds.append("bash scripts/stage7_verify.sh")
+
         if example_cmds:
-            chained_example = " && ".join(example_cmds)
+            # We don't want duplicate test_commands if we already added it via test_cases compilation
+            # Let's clean up any potential duplication by converting to set but keeping order
+            seen = set()
+            clean_cmds = []
+            for cmd in example_cmds:
+                if cmd not in seen:
+                    clean_cmds.append(cmd)
+                    seen.add(cmd)
+            chained_example = " && ".join(clean_cmds)
         else:
-            chained_example = "bash build.sh && bash stop.sh && bash clean.sh && bash deploy.sh && bash check.sh && bash test.sh && bash verify.sh"
+            chained_example = "bash stage1_build.sh && bash stage2_stop.sh && bash stage3_clean.sh && bash stage4_deploy.sh && bash stage5_check.sh && bash stage6_test.sh && bash stage7_verify.sh"
 
         loop_definition = f"【完整测试闭环】包含以下严格顺序：编译 -> 停止服务 -> 清理环境 -> 部署服务 -> 部署后检查 -> 环境测试 -> 核心验证。\n（提示：为了减少网络交互轮数，你可以使用 `&&` 将所有阶段的命令拼接成一行，一次性交给终端执行。例如：\n`{chained_example}`）"
         max_tries = config.get('max_tries_per_round', 3)
@@ -191,6 +218,12 @@ class ProjectWorkspace:
             if knowledge_text:
                 knowledge_guide = f"【开发与调试注意点（非常重要）】\n{knowledge_text}\n"
 
+        test_cases = config.get('test_cases', [])
+        if test_cases:
+            test_section = f"环境测试用例集（自动编译为 scripts/stage6_test.sh，请直接执行 bash scripts/stage6_test.sh）：\n{self._format_cases_for_prompt(test_cases)}"
+        else:
+            test_section = f"环境测试命令（用于确认测试环境已就绪，请按顺序执行）：\n{_format_cmds(config.get('test_commands', []))}"
+
         prompt = f'''你是 Trae Solo Coder，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
 
 【项目上下文】
@@ -214,11 +247,10 @@ class ProjectWorkspace:
 部署后检查命令（请按顺序执行）：
 {_format_cmds(config.get('check_commands', []))}
 
-环境测试命令（用于确认测试环境已就绪，请按顺序执行）：
-{_format_cmds(config.get('test_commands', []))}
+{test_section}
 
-核心验证命令（用于验证修复或目标是否真正完成，请按顺序执行）：
-{_format_cmds(config.get('verify_commands', []))}
+核心验证用例集（自动编译为 scripts/stage7_verify.sh，请直接执行 bash scripts/stage7_verify.sh）：
+{self._format_cases_for_prompt(config.get('verify_cases', []))}
 
 【前情提要】
 {history_text}
@@ -282,26 +314,25 @@ class ProjectWorkspace:
         scripts_dir.mkdir(exist_ok=True)
         
         stage_map = {
-            'build': 'build_commands',
-            'stop': 'stop_commands',
-            'clean': 'clean_commands',
-            'deploy': 'deploy_commands',
-            'check': 'check_commands',
-            'test': 'test_commands',
-            'verify': 'verify_commands'
+            'build': ('stage1_build', 'build_commands'),
+            'stop': ('stage2_stop', 'stop_commands'),
+            'clean': ('stage3_clean', 'clean_commands'),
+            'deploy': ('stage4_deploy', 'deploy_commands'),
+            'check': ('stage5_check', 'check_commands'),
+            'test': ('stage6_test', 'test_commands')
         }
         
         import stat
-        for stage, key in stage_map.items():
+        for stage, (script_name, key) in stage_map.items():
             commands = config.get(key, [])
             if not commands:
                 continue
                 
             # If it's already a single bash script call, skip compiling
-            if len(commands) == 1 and commands[0].startswith(f"bash ") and commands[0].endswith(f"{stage}.sh"):
+            if len(commands) == 1 and commands[0].startswith("bash ") and commands[0].endswith(f"{script_name}.sh"):
                 continue
                 
-            script_path = scripts_dir / f"{stage}.sh"
+            script_path = scripts_dir / f"{script_name}.sh"
             with open(script_path, 'w', encoding='utf-8') as f:
                 f.write("#!/bin/bash\nset -e\n")
                 for cmd in commands:
@@ -312,6 +343,80 @@ class ProjectWorkspace:
             # replace config commands with script execution
             config[key] = [f"bash {script_path}"]
             
+        mysql_port = config.get('mysql_port', 9040)
+        
+        # Handle test_cases similarly to verify_cases
+        test_cases = config.get('test_cases', [])
+        if test_cases:
+            test_script_path = scripts_dir / "stage6_test.sh"
+            with open(test_script_path, 'w', encoding='utf-8') as f:
+                f.write("#!/bin/bash\n")
+                f.write("success=0\n")
+                f.write("fail=0\n\n")
+                f.write("echo \"========== 开始执行环境测试集 (Test) ==========\"\n\n")
+                
+                for i, case in enumerate(test_cases, 1):
+                    name = case.get('name', f'Test {i}')
+                    desc = case.get('description', '')
+                    sql = case.get('sql', '')
+                    
+                    f.write("echo \"----------------------------------------\"\n")
+                    f.write(f"echo \"👉 [{name}]\"\n")
+                    f.write(f"echo \"📝 描述: {desc}\"\n")
+                    f.write(f"if mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\"; then\n")
+                    f.write("    echo \"✅ 结果: SUCCESS\"\n")
+                    f.write("    ((success++))\n")
+                    f.write("else\n")
+                    f.write("    echo \"❌ 结果: FAILED\"\n")
+                    f.write("    ((fail++))\n")
+                    f.write("fi\n\n")
+                    
+                f.write("echo \"----------------------------------------\"\n")
+                f.write("echo \"========== 环境测试结果汇总 ==========\"\n")
+                f.write(f"echo \"Total: {len(test_cases)}, Success: $success, Failed: $fail\"\n")
+                f.write("if [ $fail -gt 0 ]; then\n")
+                f.write("    exit 1\n")
+                f.write("fi\n")
+            
+            test_script_path.chmod(test_script_path.stat().st_mode | stat.S_IEXEC)
+            config['test_commands'] = [f"bash {test_script_path.absolute()}"]
+            
+        # Handle verify_cases separately
+        verify_cases = config.get('verify_cases', [])
+        if verify_cases:
+            verify_script_path = scripts_dir / "stage7_verify.sh"
+            with open(verify_script_path, 'w', encoding='utf-8') as f:
+                f.write("#!/bin/bash\n")
+                f.write("success=0\n")
+                f.write("fail=0\n\n")
+                f.write("echo \"========== 开始执行核心回归验证集 ==========\"\n\n")
+                
+                for i, case in enumerate(verify_cases, 1):
+                    name = case.get('name', f'Case {i}')
+                    desc = case.get('description', '')
+                    sql = case.get('sql', '')
+                    
+                    f.write("echo \"----------------------------------------\"\n")
+                    f.write(f"echo \"👉 [{name}]\"\n")
+                    f.write(f"echo \"📝 描述: {desc}\"\n")
+                    f.write(f"if mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\"; then\n")
+                    f.write("    echo \"✅ 结果: SUCCESS\"\n")
+                    f.write("    ((success++))\n")
+                    f.write("else\n")
+                    f.write("    echo \"❌ 结果: FAILED\"\n")
+                    f.write("    ((fail++))\n")
+                    f.write("fi\n\n")
+                    
+                f.write("echo \"----------------------------------------\"\n")
+                f.write("echo \"========== 测试结果汇总 ==========\"\n")
+                f.write(f"echo \"Total: {len(verify_cases)}, Success: $success, Failed: $fail\"\n")
+                f.write("if [ $fail -gt 0 ]; then\n")
+                f.write("    exit 1\n")
+                f.write("fi\n")
+            
+            verify_script_path.chmod(verify_script_path.stat().st_mode | stat.S_IEXEC)
+            config['verify_commands'] = [f"bash {verify_script_path.absolute()}"]
+
         self._write_json(config_path, config)
         return {"status": "success", "message": f"项目 {name} 的命令已成功编译并提取到 scripts 目录下！"}
 
@@ -383,24 +488,25 @@ class ProjectWorkspace:
 
     def _execute_single_stage(self, name: str, pdir: Path, config: Dict[str, Any], stage: str) -> int:
         stage_map = {
-            'build': 'build_commands',
-            'stop': 'stop_commands',
-            'clean': 'clean_commands',
-            'deploy': 'deploy_commands',
-            'check': 'check_commands',
-            'test': 'test_commands',
-            'verify': 'verify_commands'
+            'build': ('stage1_build', 'build_commands'),
+            'stop': ('stage2_stop', 'stop_commands'),
+            'clean': ('stage3_clean', 'clean_commands'),
+            'deploy': ('stage4_deploy', 'deploy_commands'),
+            'check': ('stage5_check', 'check_commands'),
+            'test': ('stage6_test', 'test_commands'),
+            'verify': ('stage7_verify', 'verify_commands')
         }
         
-        commands = config.get(stage_map.get(stage, ''), [])
+        script_name, key = stage_map.get(stage, (stage, ''))
+        commands = config.get(key, [])
         if not commands:
-            print(f"[Warn] 阶段 '{stage}' 没有配置任何命令。")
+            print(f"[Warn] 阶段 '{script_name}' 没有配置任何命令。")
             return 0
             
         import subprocess
-        print(f"========== 开始测试执行 {name} 的 [{stage}] 阶段 ==========")
+        print(f"========== 开始测试执行 {name} 的 [{script_name}] 阶段 ==========")
         for i, cmd in enumerate(commands, 1):
-            print(f"\n>>> [{stage}] 第 {i} 步: {cmd}")
+            print(f"\n>>> [{script_name}] 第 {i} 步: {cmd}")
             try:
                 result = subprocess.run(
                     cmd,
@@ -415,7 +521,7 @@ class ProjectWorkspace:
                 print(f"\n[Error] 命令执行异常: {str(e)}")
                 return 1
                 
-        print(f"\n========== [{stage}] 阶段执行成功！ ==========\n")
+        print(f"\n========== [{script_name}] 阶段执行成功！ ==========\n")
         return 0
 
     def _extract_round_num(self, filename: str) -> int:
