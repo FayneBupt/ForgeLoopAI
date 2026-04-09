@@ -1,0 +1,4 @@
+{
+  "agent_name": "IDE Agent",
+  "process_user": "$(whoami)"
+}

@@ -4,10 +4,13 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 class ProjectWorkspace:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, local_profile: Dict[str, Any] = None):
         self.root = root
         self.projects_root = root / 'projects'
         self.projects_root.mkdir(parents=True, exist_ok=True)
+        self.local_profile = local_profile or {}
+        self.agent_name = self.local_profile.get("agent_name", "IDE Agent")
+        self.process_user = self.local_profile.get("process_user", "$(whoami)")
 
     def project_dir(self, name: str) -> Path:
         return self.projects_root / name
@@ -39,8 +42,8 @@ class ProjectWorkspace:
             "stop_commands": [
                 "cd /path/to/Lakehouse-Sandbox-Cluster && docker-compose down || true",
                 "cd /path/to/Doris-Dev-Runner && ./stop_doris.sh /path/to/project_source/output || true",
-                "timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep lvliangliang >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true",
-                "ps -ef | grep doris | grep lvliangliang | grep -v grep | awk '{print $2}' | xargs -r kill -9 || true"
+                f"timeout 60s bash -c 'while ps -ef | grep \"[d]oris_\" | grep {self.process_user} >/dev/null; do echo \"等待 Doris 进程完全退出...\"; sleep 2; done' || true",
+                f"ps -ef | grep doris | grep {self.process_user} | grep -v grep | awk '{{print $2}}' | xargs -r kill -9 || true"
             ],
             "clean_commands": [
                 "echo '清理历史日志和元数据，确保干净启动...'",
@@ -224,7 +227,7 @@ class ProjectWorkspace:
         else:
             test_section = f"环境测试命令（用于确认测试环境已就绪，请按顺序执行）：\n{_format_cmds(config.get('test_commands', []))}"
 
-        prompt = f'''你是 Trae Solo Coder，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
+        prompt = f'''你是 {self.agent_name}，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
 
 【项目上下文】
 代码路径：{config.get('project_path', '/')}
@@ -482,25 +485,49 @@ class ProjectWorkspace:
             
         config = self._read_json(config_path)
 
-        if stage in ('all', 'all-no-build'):
-            if stage == 'all':
-                stages = ['build', 'stop', 'clean', 'deploy', 'check', 'test', 'verify']
-            else:
-                stages = ['stop', 'clean', 'deploy', 'check', 'test', 'verify']
-                
-            print(f"\n=======================================================")
-            print(f" 开始执行完整生命周期测试 | Project: [{name}]")
-            print(f" 阶段流转: {' -> '.join(stages)}")
-            print(f"=======================================================\n")
-            for s in stages:
-                code = self._execute_single_stage(name, pdir, config, s)
-                if code != 0:
-                    print(f"\n[Fatal] 完整生命周期测试在 [{s}] 阶段失败退出！")
-                    return code
-            print(f"\n[Success] 完整生命周期测试成功通过！你可以放心地生成 Prompt 交给 AI 了。")
-            return 0
+        stage = stage.strip()
+        if ',' in stage:
+            raw_stages = [s.strip() for s in stage.split(',') if s.strip()]
         else:
-            return self._execute_single_stage(name, pdir, config, stage)
+            raw_stages = [stage] if stage else []
+
+        if not raw_stages:
+            print("[Error] run 阶段参数为空，请至少传入一个阶段。")
+            return 1
+
+        valid_stages = {'build', 'stop', 'clean', 'deploy', 'check', 'test', 'verify', 'all', 'all-no-build'}
+        for s in raw_stages:
+            if s not in valid_stages:
+                print(f"[Error] 非法阶段: {s}")
+                print(f"[Hint] 支持阶段: {', '.join(sorted(valid_stages))}")
+                return 1
+
+        stage_sequences = {
+            'all': ['build', 'stop', 'clean', 'deploy', 'check', 'test', 'verify'],
+            'all-no-build': ['stop', 'clean', 'deploy', 'check', 'test', 'verify']
+        }
+        expanded_stages = []
+        for s in raw_stages:
+            if s in stage_sequences:
+                expanded_stages.extend(stage_sequences[s])
+            else:
+                expanded_stages.append(s)
+
+        if len(expanded_stages) > 1:
+            print(f"\n=======================================================")
+            print(f" 开始按序执行生命周期阶段 | Project: [{name}]")
+            print(f" 阶段流转: {' -> '.join(expanded_stages)}")
+            print(f"=======================================================\n")
+
+        for s in expanded_stages:
+            code = self._execute_single_stage(name, pdir, config, s)
+            if code != 0:
+                print(f"\n[Fatal] 生命周期测试在 [{s}] 阶段失败退出！")
+                return code
+
+        if len(expanded_stages) > 1:
+            print("\n[Success] 生命周期阶段按顺序执行成功！")
+        return 0
 
     def _execute_single_stage(self, name: str, pdir: Path, config: Dict[str, Any], stage: str) -> int:
         stage_map = {

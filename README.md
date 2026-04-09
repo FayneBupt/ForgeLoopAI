@@ -1,12 +1,12 @@
 # 🚀 ForgeLoopAI v1.0
 
-!\[Python]\(https\://img.shields.io/badge/Python-3.7%2B-blue.svg null)
-!\[License]\(https\://img.shields.io/badge/License-MIT-green.svg null)
-!\[IDE]\(https\://img.shields.io/badge/IDE-Trae%20Solo%20Coder-purple.svg null)
+[![Python](https://img.shields.io/badge/Python-3.7%2B-blue.svg)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![IDE](https://img.shields.io/badge/IDE-AI%20Agent-purple.svg)](#)
 
 **ForgeLoopAI** 是一个专为 AI-Native 软件工程打造的 **极简 7 阶段沙盒测试引擎与任务调度器**。
 
-在面对 Apache Doris 等重型 C++ / Java / Rust 大型开源工程时，IDE Agent（如 Trae Solo Coder）或 CLI Agent 常常会：
+在面对 Apache Doris 等重型 C++ / Java / Rust 大型开源工程时，IDE Agent 或 CLI Agent 常常会：
 
 - 🤯 **记不住复杂的构建/部署环境**（比如几十行的 `cmake` 或 `docker compose` 指令）
 - 🔄 **陷入死循环**（遇到编译报错疯狂盲目重试，直到耗尽上下文）
@@ -31,7 +31,7 @@
 ## 🛠️ 快速安装
 
 ```bash
-git clone https://github.com/your-username/ForgeLoopAI.git
+git clone https://github.com/<your-org-or-username>/ForgeLoopAI.git
 cd ForgeLoopAI
 
 # 推荐以可编辑模式全局安装
@@ -40,6 +40,28 @@ pip install -e .
 # 配置 alias (可选)
 alias fl='forgeloop'
 ```
+
+***
+
+## 🔒 本地化配置（脱敏）
+
+如果你希望仓库保持通用模板，但本地保留自己的个性化信息（比如 Agent 名称、进程用户名），可以这样做：
+
+```bash
+cp forgeloop.local.example.json forgeloop.local.json
+```
+
+然后编辑 `forgeloop.local.json`：
+
+```json
+{
+  "agent_name": "你的 IDE Agent 名称",
+  "process_user": "你的系统用户名或$(whoami)"
+}
+```
+
+- `forgeloop.local.json` 已在 `.gitignore` 中，**不会被提交到 GitHub**
+- `forgeloop.local.example.json` 会提交到仓库，作为团队共享模板
 
 ***
 
@@ -114,7 +136,7 @@ forgeloop mission doris_bug_123
 
 执行后，工具会扫描 `config.json` 中的 `history_context`，并生成包含「前情提要」和「严格契约」的终极任务清单 `mission.md`。
 
-你可以直接将 `mission.md` 的内容复制给 Trae Solo，或者通过 Aider 等 CLI Agent 直接执行：
+你可以直接将 `mission.md` 的内容复制给你的 IDE Agent，或者通过 Aider 等 CLI Agent 直接执行：
 
 ```bash
 # 假设结合 Aider 使用
@@ -178,7 +200,7 @@ forgeloop status
 
 在进行诸如 Apache Doris 湖仓一体（Lakehouse）相关的开发或 Bug 修复时，往往需要一个包含 HDFS、Hive Metastore 等组件的底层环境。
 
-推荐搭配使用 [Lakehouse-Sandbox-Cluster](https://github.com/FayneBupt/Lakehouse-Sandbox-Cluster) —— 一个专为测试和开发湖仓组件设计的极简、开箱即用的 Docker Compose 沙盒。
+推荐搭配使用 [Lakehouse-Sandbox-Cluster](https://github.com/<your-org-or-username>/Lakehouse-Sandbox-Cluster) —— 一个专为测试和开发湖仓组件设计的极简、开箱即用的 Docker Compose 沙盒。
 
 你可以将其一键集成到 ForgeLoopAI 的 `config.json` 中作为前置依赖：
 
