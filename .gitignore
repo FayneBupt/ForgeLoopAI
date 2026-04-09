@@ -1,4 +1,6 @@
+code/*
 runtime/
+forgeloop.local.json
 .DS_Store
 __pycache__/
 *.pyc

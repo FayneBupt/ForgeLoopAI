@@ -21,9 +21,9 @@ def build_parser() -> argparse.ArgumentParser:
     status_cmd = sub.add_parser('status', help='查看所有项目或单个项目的简要记录（路径、创建时间等）')
     status_cmd.add_argument('name', nargs='?', help='项目名称（可选，不填则列出所有项目）')
 
-    run_cmd = sub.add_parser('run', help='测试执行 config.json 中配置的各个生命周期阶段（例如 build/stop/deploy），或者执行 all 跑通全流程')
+    run_cmd = sub.add_parser('run', help='测试执行 config.json 中配置的生命周期阶段，支持单阶段或逗号分隔多阶段（例如 stop,clean）')
     run_cmd.add_argument('name', help='项目名称')
-    run_cmd.add_argument('stage', choices=['build', 'stop', 'clean', 'deploy', 'check', 'test', 'verify', 'all', 'all-no-build'], help='要测试的生命周期阶段，或者使用 all 按序执行全部，all-no-build 则跳过编译')
+    run_cmd.add_argument('stage', help='要执行的阶段（build/stop/clean/deploy/check/test/verify/all/all-no-build），支持逗号分隔并按输入顺序执行')
 
     compile_cmd = sub.add_parser('compile', help='[高阶功能] 将 config.json 中的内联命令自动提取为独立的 bash 脚本并更新配置，方便 AI 无错执行')
     compile_cmd.add_argument('name', help='项目名称')
@@ -39,7 +39,11 @@ def main() -> None:
     # 所以我们需要获取这个项目代码的绝对路径，从而推导出 runtime 的固定位置
     code_dir = Path(__file__).resolve().parent.parent
     workspace_root = code_dir / 'runtime'
-    workspace = ProjectWorkspace(workspace_root)
+    local_profile_path = code_dir / 'forgeloop.local.json'
+    local_profile = {}
+    if local_profile_path.exists():
+        local_profile = json.loads(local_profile_path.read_text(encoding='utf-8'))
+    workspace = ProjectWorkspace(workspace_root, local_profile=local_profile)
 
     if args.command == 'init':
         result = workspace.init_project(args.name)

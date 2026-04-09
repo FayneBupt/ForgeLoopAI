@@ -1,7 +1,7 @@
 [project]
 name = "forgeloopai"
 version = "1.0.0"
-description = "ForgeLoopAI v1.0 - A minimal context and prompt manager for IDE Agents (like Trae Solo Coder)"
+description = "ForgeLoopAI v1.0 - A minimal context and prompt manager for IDE Agents"
 requires-python = ">=3.7"
 
 [project.scripts]
