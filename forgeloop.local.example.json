@@ -1,4 +1,5 @@
 {
   "agent_name": "IDE Agent",
-  "process_user": "$(whoami)"
+  "process_user": "$(whoami)",
+  "SEC_TOKEN_STRING": ""
 }

@@ -56,8 +56,15 @@ cp forgeloop.local.example.json forgeloop.local.json
 ```json
 {
   "agent_name": "你的 IDE Agent 名称",
-  "process_user": "你的系统用户名或$(whoami)"
+  "process_user": "你的系统用户名或$(whoami)",
+  "SEC_TOKEN_STRING": "你的临时鉴权 token"
 }
+```
+
+也可以不改文件，直接在终端临时导出：
+
+```bash
+export SEC_TOKEN_STRING='你的临时鉴权 token'
 ```
 
 - `forgeloop.local.json` 已在 `.gitignore` 中，**不会被提交到 GitHub**
@@ -96,6 +103,12 @@ forgeloop init doris_bug_123
 >
 > # 因为大型 C++ 项目编译太耗时，如果只想测试部署到测试的全流程：
 > forgeloop run doris_bug_123 all-no-build
+>
+> # 编译阶段支持按目标执行（默认 all）：all / be / fe
+> forgeloop run doris_bug_123 build --build-target be
+>
+> # 如果你是直接跑脚本，也可以通过环境变量控制：
+> FL_BUILD_TARGET=fe bash runtime/projects/doris_bug_123/scripts/stage1_build.sh
 > ```
 
 ```json
@@ -219,22 +232,21 @@ forgeloop status
 
 ***
 
-## 🐳 进阶应用：自动化提取脚本 (compile)
+## 🐳 进阶应用：原生 Bash 脚本与环境变量解耦
 
-当你的 `config.json` 越写越复杂（包含了长串的 Docker 启动命令和心跳检测时），让 AI 一行一行粘贴执行很容易出错（比如漏掉分号、管道符截断等）。
-你可以使用 `compile` 命令，将配置中的所有内联命令**一键提取并固化**为独立的 `.sh` 脚本：
+当你的构建和部署逻辑变得极其复杂时，让 AI 在 JSON 里维护长串的命令是非常痛苦的。因此，ForgeLoopAI 采用 **“极简配置 + 环境变量注入 + 原生 Bash 脚本”** 的架构。
 
-```bash
-forgeloop compile doris_bug_123
+1. 你只需在 `config.json` 中指向对应的脚本：
+```json
+"deploy_commands": [
+  "bash ${CONFIG_DIR}/scripts/stage4_deploy.sh"
+]
 ```
+2. 在 `config.local.json` 中配置所有私密或个人本地化的环境变量（如端口、路径等）。
+3. 运行时，`fl run` 会自动读取 `config.local.json`，将其作为**原生环境变量**注入给子进程。
+4. 你的 `stage4_deploy.sh` 脚本完全是原生的 Bash 代码，直接读取 `$DORIS_PORT` 即可，且支持**完全脱离 CLI 独立运行**！
 
-执行后：
-
-1. 框架会在项目目录下自动生成一个 `scripts` 文件夹。
-2. 为每个生命周期生成独立的脚本（如 `build.sh`, `deploy.sh`, `check.sh`），并自动在文件头部注入 `#!/bin/bash` 和 `set -e`。
-3. 你的 `config.json` 会被自动替换为类似 `"deploy_commands": ["bash /path/to/.../scripts/deploy.sh"]`。
-
-**优势：** 彻底隔离“控制面”和“执行面”。AI 只需执行一句简单的 `bash deploy.sh`，内部复杂的逻辑闭环都在本地高速执行，再也不用担心上下文截断和拷贝错误！
+**优势：** 彻底隔离了“控制面”、“配置面”和“执行面”。代码仓库保持干净且脱敏，测试逻辑拥有 Bash 的全部灵活性，AI 也不再因为复杂的转义和拼接而出错。
 
 ***
 
@@ -245,6 +257,30 @@ forgeloop compile doris_bug_123
 ```bash
 forgeloop rm doris_bug_123
 ```
+
+如果你需要快速抓取 FE / BE JNI / BE C++ 的堆栈信息进行排障：
+
+```bash
+forgeloop debug doris_bug_123
+```
+
+执行后会在 `runtime/projects/doris_bug_123/` 下生成 `debug-<YYYYMMDDHHMMSS>/` 目录，并输出：
+- `fe_jstack.txt`
+- `be_jni_jstack.txt`
+- `be_gdb_bt.txt`
+- `pids.json`
+- `summary.json`
+
+如果你想执行 `runtime/projects/tools` 下的日常 Python 工具脚本：
+
+```bash
+forgeloop start start_with_auth
+forgeloop start start_with_auth -- --host 127.0.0.1 --port 9045 --loops 1
+```
+
+如果你想快速查看完整命令清单和每个参数说明，请阅读：
+- [commands.md](file:///data01/home/lvliangliang/code/ForgeLoopAI/docs/commands.md)
+- 新增命令时，请同步更新这份文档，避免命令分散在多个 README 段落里难以检索
 
 ***
 
