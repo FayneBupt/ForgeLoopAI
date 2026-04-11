@@ -1,6 +1,36 @@
 code/*
-runtime/
 forgeloop.local.json
 .DS_Store
 __pycache__/
 *.pyc
+
+# ----------------------------------------
+# ForgeLoopAI Runtime Projects Git 控制
+# ----------------------------------------
+# 1. 默认忽略整个 runtime 目录，除了包含项目的路径
+runtime/*
+!runtime/projects/
+
+# 2. 忽略 projects 下的所有内容，除了你显式放行的项目
+runtime/projects/*
+!runtime/projects/3-doris-work-2/
+
+# 3. 强制过滤放行项目下的大文件、私有配置、日志和运行时生成文件
+runtime/projects/**/config.local.json
+runtime/projects/**/debug-*/
+runtime/projects/**/history-*.json
+runtime/projects/**/status.json
+runtime/projects/**/fe.conf
+runtime/projects/**/be.conf
+runtime/projects/**/log/
+runtime/projects/**/storage/
+runtime/projects/**/meta/
+runtime/projects/**/output/
+runtime/projects/**/pids.json
+# runtime/projects/**/scripts/stage*.sh
+
+# 4. 忽略 Doris 节点生成的目录/软链接 (如 fe-log, be-storage 等)
+runtime/projects/**/fe-*/
+runtime/projects/**/be-*/
+runtime/projects/**/fe-*
+runtime/projects/**/be-*

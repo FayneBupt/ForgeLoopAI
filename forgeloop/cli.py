@@ -1,5 +1,7 @@
 import argparse
 import json
+import time
+import sys
 from pathlib import Path
 
 from .project_ops import ProjectWorkspace
@@ -24,14 +26,22 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = sub.add_parser('run', help='测试执行 config.json 中配置的生命周期阶段，支持单阶段或逗号分隔多阶段（例如 stop,clean）')
     run_cmd.add_argument('name', help='项目名称')
     run_cmd.add_argument('stage', help='要执行的阶段（build/stop/clean/deploy/check/test/verify/all/all-no-build），支持逗号分隔并按输入顺序执行')
+    run_cmd.add_argument('--build-target', choices=['all', 'be', 'fe'], default=None, help='编译目标（仅在 build 阶段生效）：all/be/fe')
+    run_cmd.add_argument('--list', action='store_true', help='[仅 verify 阶段] 列出所有测试用例')
+    run_cmd.add_argument('--case', type=str, help='[仅 verify 阶段] 指定执行某个测试用例 (例如 a1.sql)')
 
-    compile_cmd = sub.add_parser('compile', help='[高阶功能] 将 config.json 中的内联命令自动提取为独立的 bash 脚本并更新配置，方便 AI 无错执行')
-    compile_cmd.add_argument('name', help='项目名称')
+    start_cmd = sub.add_parser('start', help='执行 runtime/projects/tools 下的 Python 脚本，例如 start_with_auth')
+    start_cmd.add_argument('script', help='脚本名（可省略 .py）')
+    start_cmd.add_argument('script_args', nargs=argparse.REMAINDER, help='透传给脚本的参数，建议用 -- 分隔')
+
+    debug_cmd = sub.add_parser('debug', help='自动采集 FE/BE JNI/BE GDB 堆栈并保存到项目目录的 debug-时间戳 文件夹')
+    debug_cmd.add_argument('name', help='项目名称')
 
     return parser
 
 
 def main() -> None:
+    started = time.perf_counter()
     parser = build_parser()
     args = parser.parse_args()
 
@@ -54,12 +64,15 @@ def main() -> None:
     elif args.command == 'status':
         result = workspace.project_status(args.name)
     elif args.command == 'run':
-        # run 是直接打印日志到终端，它返回的是执行的状态
-        import sys
-        code = workspace.run_stage(args.name, args.stage)
+        code = workspace.run_stage(args.name, args.stage, build_target=args.build_target, list_cases=args.list, case_name=args.case)
+        print(f"\n[Timing] 命令总耗时: {time.perf_counter() - started:.3f}s")
         sys.exit(code)
-    elif args.command == 'compile':
-        result = workspace.compile_scripts(args.name)
+    elif args.command == 'start':
+        code = workspace.run_start(args.script, args.script_args)
+        print(f"\n[Timing] 命令总耗时: {time.perf_counter() - started:.3f}s")
+        sys.exit(code)
+    elif args.command == 'debug':
+        result = workspace.debug_project(args.name)
     else:
         raise RuntimeError('unknown command')
 
@@ -78,6 +91,7 @@ def main() -> None:
             print(f"{len(projects)} rows in set")
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    print(f"\n[Timing] 命令总耗时: {time.perf_counter() - started:.3f}s")
 
 if __name__ == '__main__':
     main()

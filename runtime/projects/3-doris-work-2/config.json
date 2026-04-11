@@ -1,0 +1,34 @@
+{
+  "project_name": "3-doris-work-2",
+  "project_path": "${DORIS_PROJECT_PATH}",
+  "max_tries_per_round": 10,
+  "mysql_port": "${DORIS_PORT}",
+  "history_context": [],
+  "goal": "调试并修复场内doris insert piamon功能问题，直接修复verify中的case就可以",
+  "build_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage1_build.sh"
+  ],
+  "stop_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage2_stop.sh"
+  ],
+  "clean_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage3_clean.sh"
+  ],
+  "deploy_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage4_deploy.sh"
+  ],
+  "check_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage5_check.sh"
+  ],
+  "log_directories": [
+    "${DORIS_PROJECT_PATH}/output/fe/log",
+    "${DORIS_PROJECT_PATH}/output/be/log"
+  ],
+  "test_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage6_test.sh"
+  ],
+  "verify_commands": [
+    "bash ${CONFIG_DIR}/scripts/stage7_verify.sh"
+  ],
+  "build_target_default": "all"
+}

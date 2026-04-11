@@ -1,7 +1,12 @@
 import json
 import re
+import datetime
+import subprocess
+import time
+import os
+import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 class ProjectWorkspace:
     def __init__(self, root: Path, local_profile: Dict[str, Any] = None):
@@ -11,6 +16,7 @@ class ProjectWorkspace:
         self.local_profile = local_profile or {}
         self.agent_name = self.local_profile.get("agent_name", "IDE Agent")
         self.process_user = self.local_profile.get("process_user", "$(whoami)")
+        self.sec_token_string = self.local_profile.get("SEC_TOKEN_STRING") or os.environ.get("SEC_TOKEN_STRING", "")
 
     def project_dir(self, name: str) -> Path:
         return self.projects_root / name
@@ -30,6 +36,7 @@ class ProjectWorkspace:
             "project_path": "/path/to/your/project_source",
             "goal": "在这里填写本次开发或修复的目标，例如：修复湖仓读取 Null 指针异常",
             "max_tries_per_round": 3,
+            "build_target_default": "all",
             "history_context": [],
             "log_directories": [
                 "/path/to/project_source/output/fe/log",
@@ -223,9 +230,22 @@ class ProjectWorkspace:
 
         test_cases = config.get('test_cases', [])
         if test_cases:
-            test_section = f"环境测试用例集（自动编译为 scripts/stage6_test.sh，请直接执行 bash scripts/stage6_test.sh）：\n{self._format_cases_for_prompt(test_cases)}"
+            test_section = f"环境测试用例集（请直接执行 bash scripts/stage6_test.sh）：\n{self._format_cases_for_prompt(test_cases)}"
         else:
             test_section = f"环境测试命令（用于确认测试环境已就绪，请按顺序执行）：\n{_format_cmds(config.get('test_commands', []))}"
+        mission_build_target = self._normalize_build_target(config.get("build_target_default"), "all")
+        build_strategy_guide = f"""编译策略（重要）：
+- 首次接手或基础环境发生变化时，优先全量编译：`forgeloop run {name} build --build-target all`
+- 后续若仅修改 BE 代码，使用：`forgeloop run {name} build --build-target be`
+- 后续若仅修改 FE 代码，使用：`forgeloop run {name} build --build-target fe`
+- 如果你直接执行脚本，可用环境变量控制：`FL_BUILD_TARGET=be bash {pdir / 'scripts' / 'stage1_build.sh'}`
+- 当前项目默认编译目标：`{mission_build_target}`"""
+
+        verify_cases = config.get('verify_cases', [])
+        if verify_cases:
+            verify_section = f"核心验证用例集（请直接执行 bash scripts/stage7_verify.sh）：\n{self._format_cases_for_prompt(verify_cases)}"
+        else:
+            verify_section = f"核心验证命令（请按顺序执行）：\n{_format_cmds(config.get('verify_commands', []))}"
 
         prompt = f'''你是 {self.agent_name}，当前任务是协助我完成代码的开发、编译、部署与测试闭环。
 
@@ -235,6 +255,8 @@ class ProjectWorkspace:
 
 {log_guide}
 {knowledge_guide}
+{build_strategy_guide}
+
 编译命令（请按顺序执行）：
 {_format_cmds(config.get('build_commands', []))}
 
@@ -252,8 +274,7 @@ class ProjectWorkspace:
 
 {test_section}
 
-核心验证用例集（自动编译为 scripts/stage7_verify.sh，请直接执行 bash scripts/stage7_verify.sh）：
-{self._format_cases_for_prompt(config.get('verify_cases', []))}
+{verify_section}
 
 【前情提要】
 {history_text}
@@ -303,142 +324,6 @@ class ProjectWorkspace:
         except Exception as e:
             return {"status": "error", "message": f"删除项目 {name} 失败: {str(e)}"}
 
-    def compile_scripts(self, name: str) -> Dict[str, Any]:
-        pdir = self.project_dir(name)
-        if not pdir.exists():
-            return {"status": "error", "message": f"项目 {name} 不存在"}
-            
-        config_path = pdir / 'config.json'
-        if not config_path.exists():
-            return {"status": "error", "message": f"找不到 config.json"}
-            
-        config = self._read_json(config_path)
-        scripts_dir = pdir / 'scripts'
-        scripts_dir.mkdir(exist_ok=True)
-        
-        stage_map = {
-            'build': ('stage1_build', 'build_commands'),
-            'stop': ('stage2_stop', 'stop_commands'),
-            'clean': ('stage3_clean', 'clean_commands'),
-            'deploy': ('stage4_deploy', 'deploy_commands'),
-            'check': ('stage5_check', 'check_commands'),
-            'test': ('stage6_test', 'test_commands')
-        }
-        
-        import stat
-        for stage, (script_name, key) in stage_map.items():
-            commands = config.get(key, [])
-            if not commands:
-                continue
-                
-            # If it's already a single bash script call, skip compiling
-            if len(commands) == 1 and commands[0].startswith("bash ") and commands[0].endswith(f"{script_name}.sh"):
-                continue
-                
-            script_path = scripts_dir / f"{script_name}.sh"
-            with open(script_path, 'w', encoding='utf-8') as f:
-                f.write("#!/bin/bash\nset -e\n")
-                for cmd in commands:
-                    f.write(f"{cmd}\n")
-            # add executable permission
-            script_path.chmod(script_path.stat().st_mode | stat.S_IEXEC)
-            
-            # replace config commands with script execution
-            config[key] = [f"bash {script_path}"]
-            
-        mysql_port = config.get('mysql_port', 9040)
-        
-        # Handle test_cases similarly to verify_cases
-        test_cases = config.get('test_cases', [])
-        if test_cases:
-            test_script_path = scripts_dir / "stage6_test.sh"
-            with open(test_script_path, 'w', encoding='utf-8') as f:
-                f.write("#!/bin/bash\n")
-                f.write("success=0\n")
-                f.write("fail=0\n\n")
-                f.write("echo \"========== 开始执行环境测试集 (Test) ==========\"\n\n")
-                
-                for i, case in enumerate(test_cases, 1):
-                    name = case.get('name', f'Test {i}')
-                    desc = case.get('description', '')
-                    sql = case.get('sql', '')
-                    command = case.get('command', '')
-                    
-                    f.write("echo \"----------------------------------------\"\n")
-                    f.write(f"echo \"👉 [{name}]\"\n")
-                    f.write(f"echo \"📝 描述: {desc}\"\n")
-                    if command:
-                        f.write(f"if result=$({command} 2>&1); then\n")
-                    else:
-                        f.write(f"if result=$(mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\" 2>&1); then\n")
-                    f.write("    echo \"✅ 结果: SUCCESS\"\n")
-                    f.write("    echo \"📊 输出:\"\n")
-                    f.write("    echo \"$result\"\n")
-                    f.write("    ((success++))\n")
-                    f.write("else\n")
-                    f.write("    echo \"❌ 结果: FAILED\"\n")
-                    f.write("    echo \"📉 错误输出:\"\n")
-                    f.write("    echo \"$result\"\n")
-                    f.write("    ((fail++))\n")
-                    f.write("fi\n\n")
-                    
-                f.write("echo \"----------------------------------------\"\n")
-                f.write("echo \"========== 环境测试结果汇总 ==========\"\n")
-                f.write(f"echo \"Total: {len(test_cases)}, Success: $success, Failed: $fail\"\n")
-                f.write("if [ $fail -gt 0 ]; then\n")
-                f.write("    exit 1\n")
-                f.write("fi\n")
-            
-            test_script_path.chmod(test_script_path.stat().st_mode | stat.S_IEXEC)
-            config['test_commands'] = [f"bash {test_script_path.absolute()}"]
-            
-        # Handle verify_cases separately
-        verify_cases = config.get('verify_cases', [])
-        if verify_cases:
-            verify_script_path = scripts_dir / "stage7_verify.sh"
-            with open(verify_script_path, 'w', encoding='utf-8') as f:
-                f.write("#!/bin/bash\n")
-                f.write("success=0\n")
-                f.write("fail=0\n\n")
-                f.write("echo \"========== 开始执行核心回归验证集 ==========\"\n\n")
-                
-                for i, case in enumerate(verify_cases, 1):
-                    name = case.get('name', f'Case {i}')
-                    desc = case.get('description', '')
-                    sql = case.get('sql', '')
-                    command = case.get('command', '')
-                    
-                    f.write("echo \"----------------------------------------\"\n")
-                    f.write(f"echo \"👉 [{name}]\"\n")
-                    f.write(f"echo \"📝 描述: {desc}\"\n")
-                    if command:
-                        f.write(f"if result=$({command} 2>&1); then\n")
-                    else:
-                        f.write(f"if result=$(mysql -h 127.0.0.1 -P {mysql_port} -uroot -e \"{sql}\" 2>&1); then\n")
-                    f.write("    echo \"✅ 结果: SUCCESS\"\n")
-                    f.write("    echo \"📊 输出:\"\n")
-                    f.write("    echo \"$result\"\n")
-                    f.write("    ((success++))\n")
-                    f.write("else\n")
-                    f.write("    echo \"❌ 结果: FAILED\"\n")
-                    f.write("    echo \"📉 错误输出:\"\n")
-                    f.write("    echo \"$result\"\n")
-                    f.write("    ((fail++))\n")
-                    f.write("fi\n\n")
-                    
-                f.write("echo \"----------------------------------------\"\n")
-                f.write("echo \"========== 测试结果汇总 ==========\"\n")
-                f.write(f"echo \"Total: {len(verify_cases)}, Success: $success, Failed: $fail\"\n")
-                f.write("if [ $fail -gt 0 ]; then\n")
-                f.write("    exit 1\n")
-                f.write("fi\n")
-            
-            verify_script_path.chmod(verify_script_path.stat().st_mode | stat.S_IEXEC)
-            config['verify_commands'] = [f"bash {verify_script_path.absolute()}"]
-
-        self._write_json(config_path, config)
-        return {"status": "success", "message": f"项目 {name} 的命令已成功编译并提取到 scripts 目录下！"}
-
     def project_status(self, name: str = None) -> Dict[str, Any]:
         if name:
             projects = [self.project_dir(name)]
@@ -472,7 +357,138 @@ class ProjectWorkspace:
             
         return {"status": "success", "projects": results}
 
-    def run_stage(self, name: str, stage: str) -> int:
+    def debug_project(self, name: str) -> Dict[str, Any]:
+        total_start = time.perf_counter()
+        pdir = self.project_dir(name)
+        if not pdir.exists():
+            return {"status": "error", "message": f"项目 {name} 不存在"}
+
+        config_path = pdir / 'config.json'
+        if not config_path.exists():
+            return {"status": "error", "message": "找不到 config.json"}
+
+        config = self._read_json(config_path)
+        project_path_raw = str(config.get("project_path", "")).strip()
+        project_path = Path(project_path_raw).expanduser() if project_path_raw else Path("/")
+        timestamp = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        debug_dir = pdir / f"debug-{timestamp}"
+        debug_dir.mkdir(parents=True, exist_ok=True)
+
+        print(f"[Debug] 项目: {name}")
+        print(f"[Debug] 项目代码路径: {project_path}")
+        print(f"[Debug] 调试输出目录: {debug_dir}")
+        print("[Debug] 正在定位 FE/BE/BE JNI 进程...")
+        pid_start = time.perf_counter()
+        fe_pid = self._resolve_fe_pid(project_path)
+        be_pid = self._resolve_be_pid(project_path)
+        be_jni_pid = self._resolve_be_jni_pid(project_path, be_pid)
+        pid_seconds = self._elapsed_seconds(pid_start)
+        print(f"[Debug] FE PID: {fe_pid}")
+        print(f"[Debug] BE PID: {be_pid}")
+        print(f"[Debug] BE JNI PID: {be_jni_pid}")
+        print(f"[Debug] 进程定位耗时: {pid_seconds:.2f}s")
+
+        self._write_json(debug_dir / 'pids.json', {
+            "fe_pid": fe_pid,
+            "be_pid": be_pid,
+            "be_jni_pid": be_jni_pid,
+            "project_path": str(project_path)
+        })
+
+        print("[Debug] 开始采集 FE jstack...")
+        fe_stack = self._collect_java_stack(fe_pid, debug_dir / 'fe_jstack.txt', "FE")
+        print(f"[Debug] FE jstack 完成: {fe_stack.get('status')} | 耗时: {fe_stack.get('seconds', 0.0):.2f}s")
+        print("[Debug] 开始采集 BE JNI jstack...")
+        be_jni_stack = self._collect_java_stack(be_jni_pid, debug_dir / 'be_jni_jstack.txt', "BE JNI")
+        print(f"[Debug] BE JNI jstack 完成: {be_jni_stack.get('status')} | 耗时: {be_jni_stack.get('seconds', 0.0):.2f}s")
+        print("[Debug] 开始采集 BE gdb 堆栈...")
+        be_gdb_stack = self._collect_gdb_stack(be_pid, debug_dir / 'be_gdb_bt.txt')
+        print(f"[Debug] BE gdb 堆栈完成: {be_gdb_stack.get('status')} | 耗时: {be_gdb_stack.get('seconds', 0.0):.2f}s")
+
+        total_seconds = self._elapsed_seconds(total_start)
+        timing = {
+            "resolve_pids_seconds": round(pid_seconds, 3),
+            "fe_jstack_seconds": round(fe_stack.get("seconds", 0.0), 3),
+            "be_jni_jstack_seconds": round(be_jni_stack.get("seconds", 0.0), 3),
+            "be_gdb_bt_seconds": round(be_gdb_stack.get("seconds", 0.0), 3),
+            "total_seconds": round(total_seconds, 3)
+        }
+        print("[Debug] 调试采集耗时统计:")
+        print(f"  - resolve_pids: {timing['resolve_pids_seconds']:.3f}s")
+        print(f"  - fe_jstack: {timing['fe_jstack_seconds']:.3f}s")
+        print(f"  - be_jni_jstack: {timing['be_jni_jstack_seconds']:.3f}s")
+        print(f"  - be_gdb_bt: {timing['be_gdb_bt_seconds']:.3f}s")
+        print(f"  - total: {timing['total_seconds']:.3f}s")
+
+        self._write_json(debug_dir / 'summary.json', {
+            "name": name,
+            "timestamp": timestamp,
+            "debug_dir": str(debug_dir),
+            "timing": timing,
+            "files": {
+                "fe_jstack": fe_stack,
+                "be_jni_jstack": be_jni_stack,
+                "be_gdb_bt": be_gdb_stack
+            }
+        })
+
+        return {
+            "status": "success",
+            "message": f"调试堆栈采集完成：{debug_dir}",
+            "debug_dir": str(debug_dir),
+            "pids": {
+                "fe_pid": fe_pid,
+                "be_pid": be_pid,
+                "be_jni_pid": be_jni_pid
+            },
+            "files": {
+                "fe_jstack": str(debug_dir / 'fe_jstack.txt'),
+                "be_jni_jstack": str(debug_dir / 'be_jni_jstack.txt'),
+                "be_gdb_bt": str(debug_dir / 'be_gdb_bt.txt'),
+                "summary": str(debug_dir / 'summary.json')
+            },
+            "timing": timing
+        }
+
+    def run_start(self, script_name: str, script_args: Optional[List[str]] = None) -> int:
+        tools_dir = self.projects_root / "tools"
+        if not tools_dir.exists():
+            print(f"[Error] tools 目录不存在: {tools_dir}")
+            return 1
+        normalized = script_name.strip()
+        if not normalized:
+            print("[Error] start 命令缺少脚本名")
+            return 1
+        if not normalized.endswith(".py"):
+            normalized = f"{normalized}.py"
+        script_path = tools_dir / normalized
+        if not script_path.exists():
+            print(f"[Error] 脚本不存在: {script_path}")
+            return 1
+        args = script_args or []
+        if args and args[0] == "--":
+            args = args[1:]
+        env = dict(os.environ)
+        if self.sec_token_string:
+            env["SEC_TOKEN_STRING"] = str(self.sec_token_string)
+        cmd = [sys.executable, str(script_path)] + args
+        print(f"========== 开始执行 tools 脚本: {normalized} ==========")
+        started = time.perf_counter()
+        try:
+            result = subprocess.run(cmd, cwd=str(tools_dir), env=env)
+            seconds = self._elapsed_seconds(started)
+            print(f"[Timing] tools/{normalized} 耗时: {seconds:.3f}s")
+            if result.returncode != 0:
+                print(f"[Error] tools/{normalized} 执行失败，退出码: {result.returncode}")
+            else:
+                print(f"[Success] tools/{normalized} 执行成功")
+            return result.returncode
+        except Exception as e:
+            print(f"[Error] 执行 tools/{normalized} 发生异常: {str(e)}")
+            return 1
+
+    def run_stage(self, name: str, stage: str, build_target: Optional[str] = None, list_cases: bool = False, case_name: Optional[str] = None) -> int:
+        total_start = time.perf_counter()
         pdir = self.project_dir(name)
         if not pdir.exists():
             print(f"[Error] 项目 {name} 不存在")
@@ -484,6 +500,11 @@ class ProjectWorkspace:
             return 1
             
         config = self._read_json(config_path)
+        resolved_build_target = self._normalize_build_target(build_target, config.get("build_target_default", "all"))
+        if resolved_build_target not in {"all", "be", "fe"}:
+            print(f"[Error] 非法 build_target: {resolved_build_target}")
+            print("[Hint] build_target 仅支持: all, be, fe")
+            return 1
 
         stage = stage.strip()
         if ',' in stage:
@@ -519,17 +540,27 @@ class ProjectWorkspace:
             print(f" 阶段流转: {' -> '.join(expanded_stages)}")
             print(f"=======================================================\n")
 
+        stage_timings: List[Dict[str, Any]] = []
         for s in expanded_stages:
-            code = self._execute_single_stage(name, pdir, config, s)
+            code, stage_seconds = self._execute_single_stage(name, pdir, config, s, build_target=resolved_build_target, list_cases=list_cases, case_name=case_name)
+            stage_timings.append({"stage": s, "seconds": stage_seconds, "code": code})
             if code != 0:
                 print(f"\n[Fatal] 生命周期测试在 [{s}] 阶段失败退出！")
+                print("\n[Timing] 本次执行耗时统计：")
+                for item in stage_timings:
+                    print(f"  - {item['stage']}: {item['seconds']:.3f}s (code={item['code']})")
+                print(f"  - total: {self._elapsed_seconds(total_start):.3f}s")
                 return code
 
         if len(expanded_stages) > 1:
             print("\n[Success] 生命周期阶段按顺序执行成功！")
+        print("\n[Timing] 本次执行耗时统计：")
+        for item in stage_timings:
+            print(f"  - {item['stage']}: {item['seconds']:.3f}s (code={item['code']})")
+        print(f"  - total: {self._elapsed_seconds(total_start):.3f}s")
         return 0
 
-    def _execute_single_stage(self, name: str, pdir: Path, config: Dict[str, Any], stage: str) -> int:
+    def _execute_single_stage(self, name: str, pdir: Path, config: Dict[str, Any], stage: str, build_target: str = "all", list_cases: bool = False, case_name: Optional[str] = None) -> Tuple[int, float]:
         stage_map = {
             'build': ('stage1_build', 'build_commands'),
             'stop': ('stage2_stop', 'stop_commands'),
@@ -540,36 +571,236 @@ class ProjectWorkspace:
             'verify': ('stage7_verify', 'verify_commands')
         }
         
+        # Load local env vars
+        local_json_path = pdir / "config.local.json"
+        local_env = {}
+        if local_json_path.exists():
+            try:
+                local_config = json.loads(local_json_path.read_text(encoding='utf-8'))
+                local_env = local_config.get("env", {})
+            except Exception:
+                pass
+        
         script_name, key = stage_map.get(stage, (stage, ''))
         commands = config.get(key, [])
+        stage_start = time.perf_counter()
+        if stage == "build":
+            commands = self._filter_build_commands(commands, build_target)
+            print(f"[Build] 当前编译目标: {build_target}")
         if not commands:
             print(f"[Warn] 阶段 '{script_name}' 没有配置任何命令。")
-            return 0
+            return 0, self._elapsed_seconds(stage_start)
             
-        import subprocess
         print(f"========== 开始测试执行 {name} 的 [{script_name}] 阶段 ==========")
         for i, cmd in enumerate(commands, 1):
-            print(f"\n>>> [{script_name}] 第 {i} 步: {cmd}")
+            cmd_start = time.perf_counter()
+            runtime_cmd = self._sanitize_secret_assignments(cmd)
+            # Expand config_dir directly instead of jinja template
+            runtime_cmd = runtime_cmd.replace("{{config_dir}}", str(pdir))
+            
+            if stage == "verify":
+                if list_cases:
+                    runtime_cmd += " --list"
+                elif case_name:
+                    runtime_cmd += f" --case {case_name}"
+            
+            print(f"\n>>> [{script_name}] 第 {i} 步: {runtime_cmd}")
             try:
+                env = dict(os.environ)
+                for k, v in local_env.items():
+                    env[k] = str(v)
+                env["CONFIG_DIR"] = str(pdir)
+                
+                if "SEC_TOKEN_STRING" in runtime_cmd and not self.sec_token_string:
+                    print("\n[Error] 检测到命令依赖 SEC_TOKEN_STRING，但当前为空。")
+                    print("[Hint] 请在 forgeloop.local.json 中填写 SEC_TOKEN_STRING，或先 export SEC_TOKEN_STRING=... 再执行。")
+                    return 1, self._elapsed_seconds(stage_start)
+                if self.sec_token_string:
+                    env["SEC_TOKEN_STRING"] = str(self.sec_token_string)
+                if stage == "build":
+                    env["FL_BUILD_TARGET"] = build_target
+                    
+                # Resolve project path expanding vars like $HOME or $CONFIG_DIR
+                raw_project_path = config.get("project_path", str(pdir))
+                import string
+                cwd_path = string.Template(os.path.expanduser(raw_project_path)).safe_substitute(env)
+                
                 result = subprocess.run(
-                    cmd,
+                    runtime_cmd,
                     shell=True,
                     executable="/bin/bash",
-                    cwd=config.get("project_path", str(pdir))
+                    cwd=cwd_path,
+                    env=env
                 )
+                cmd_seconds = self._elapsed_seconds(cmd_start)
+                print(f"[Timing] [{script_name}] 第 {i} 步耗时: {cmd_seconds:.3f}s")
                 if result.returncode != 0:
                     print(f"\n[Error] 命令执行失败，退出码: {result.returncode}")
-                    return result.returncode
+                    return result.returncode, self._elapsed_seconds(stage_start)
             except Exception as e:
+                cmd_seconds = self._elapsed_seconds(cmd_start)
+                print(f"[Timing] [{script_name}] 第 {i} 步耗时: {cmd_seconds:.3f}s")
                 print(f"\n[Error] 命令执行异常: {str(e)}")
-                return 1
+                return 1, self._elapsed_seconds(stage_start)
                 
-        print(f"\n========== [{script_name}] 阶段执行成功！ ==========\n")
-        return 0
+        stage_seconds = self._elapsed_seconds(stage_start)
+        print(f"\n========== [{script_name}] 阶段执行成功！耗时 {stage_seconds:.3f}s ==========\n")
+        return 0, stage_seconds
 
     def _extract_round_num(self, filename: str) -> int:
         match = re.search(r'round_(\d+)\.(json|pending)', filename)
         return int(match.group(1)) if match else 99999
+
+    def _pid_alive(self, pid: Optional[int]) -> bool:
+        return bool(pid) and Path(f"/proc/{pid}").exists()
+
+    def _read_pid_file(self, pid_file: Path) -> Optional[int]:
+        if not pid_file.exists():
+            return None
+        try:
+            pid = int(pid_file.read_text(encoding='utf-8').strip())
+            return pid if self._pid_alive(pid) else None
+        except Exception:
+            return None
+
+    def _find_pid_by_substrings(self, substrings: List[str]) -> Optional[int]:
+        cleaned = [s for s in substrings if s]
+        if not cleaned:
+            return None
+        try:
+            output = subprocess.check_output(["ps", "-eo", "pid=,args="], text=True)
+        except Exception:
+            return None
+        candidates = []
+        for line in output.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) < 2:
+                continue
+            try:
+                pid = int(parts[0])
+            except Exception:
+                continue
+            args = parts[1]
+            if all(token in args for token in cleaned):
+                candidates.append(pid)
+        return max(candidates) if candidates else None
+
+    def _resolve_fe_pid(self, project_path: Path) -> Optional[int]:
+        candidates = [
+            project_path / "output/fe/bin/fe.pid",
+            project_path / "output/fe/fe.pid",
+            project_path / "fe/bin/fe.pid"
+        ]
+        for pid_file in candidates:
+            pid = self._read_pid_file(pid_file)
+            if pid:
+                return pid
+        pid = self._find_pid_by_substrings([str(project_path), "output/fe", "java"])
+        if pid:
+            return pid
+        return None
+
+    def _resolve_be_pid(self, project_path: Path) -> Optional[int]:
+        candidates = [
+            project_path / "output/be/bin/be.pid",
+            project_path / "output/be/be.pid",
+            project_path / "be/bin/be.pid"
+        ]
+        for pid_file in candidates:
+            pid = self._read_pid_file(pid_file)
+            if pid:
+                return pid
+        pid = self._find_pid_by_substrings([str(project_path), "output/be", "doris_be"])
+        if pid:
+            return pid
+        return None
+
+    def _resolve_be_jni_pid(self, project_path: Path, be_pid: Optional[int]) -> Optional[int]:
+        if be_pid:
+            return be_pid
+        return None
+
+    def _collect_java_stack(self, pid: Optional[int], output_file: Path, label: str) -> Dict[str, Any]:
+        started = time.perf_counter()
+        if not pid:
+            output_file.write_text(f"{label} PID 未找到，无法采集 jstack。\n", encoding='utf-8')
+            return {"status": "skipped", "reason": "pid_not_found", "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        try:
+            with output_file.open('w', encoding='utf-8') as f:
+                result = subprocess.run(
+                    ["jstack", "-l", str(pid)],
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=90
+                )
+            if result.returncode == 0:
+                return {"status": "success", "pid": pid, "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+            return {"status": "failed", "pid": pid, "code": result.returncode, "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        except FileNotFoundError:
+            output_file.write_text("jstack 不存在，请先安装 JDK 并确保 jstack 在 PATH 中。\n", encoding='utf-8')
+            return {"status": "failed", "pid": pid, "reason": "jstack_not_found", "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        except subprocess.TimeoutExpired:
+            output_file.write_text("jstack 执行超时。\n", encoding='utf-8')
+            return {"status": "failed", "pid": pid, "reason": "timeout", "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        except Exception as e:
+            output_file.write_text(f"jstack 执行异常: {str(e)}\n", encoding='utf-8')
+            return {"status": "failed", "pid": pid, "reason": str(e), "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+
+    def _collect_gdb_stack(self, pid: Optional[int], output_file: Path) -> Dict[str, Any]:
+        started = time.perf_counter()
+        if not pid:
+            output_file.write_text("BE PID 未找到，无法采集 gdb 堆栈。\n", encoding='utf-8')
+            return {"status": "skipped", "reason": "pid_not_found", "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        try:
+            with output_file.open('w', encoding='utf-8') as f:
+                result = subprocess.run(
+                    ["gdb", "-batch", "-ex", "set pagination off", "-ex", "thread apply all bt", "-p", str(pid)],
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    timeout=120
+                )
+            if result.returncode == 0:
+                return {"status": "success", "pid": pid, "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+            return {"status": "failed", "pid": pid, "code": result.returncode, "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        except FileNotFoundError:
+            output_file.write_text("gdb 不存在，请先安装 gdb。\n", encoding='utf-8')
+            return {"status": "failed", "pid": pid, "reason": "gdb_not_found", "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        except subprocess.TimeoutExpired:
+            output_file.write_text("gdb 执行超时。\n", encoding='utf-8')
+            return {"status": "failed", "pid": pid, "reason": "timeout", "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+        except Exception as e:
+            output_file.write_text(f"gdb 执行异常: {str(e)}\n", encoding='utf-8')
+            return {"status": "failed", "pid": pid, "reason": str(e), "file": str(output_file), "seconds": self._elapsed_seconds(started)}
+
+    def _elapsed_seconds(self, start: float) -> float:
+        return time.perf_counter() - start
+
+    def _normalize_build_target(self, build_target: Any, fallback: Any = "all") -> str:
+        candidate = str(build_target if build_target is not None else fallback).strip().lower()
+        return candidate if candidate in {"all", "be", "fe"} else "all"
+
+    def _filter_build_commands(self, commands: List[str], build_target: str) -> List[str]:
+        if build_target == "all":
+            return commands
+        selected = []
+        for cmd in commands:
+            has_be = "--be" in cmd
+            has_fe = "--fe" in cmd
+            if not has_be and not has_fe:
+                selected.append(cmd)
+                continue
+            if build_target == "be" and has_be and not has_fe:
+                selected.append(cmd)
+            if build_target == "fe" and has_fe and not has_be:
+                selected.append(cmd)
+        return selected
+
+    def _sanitize_secret_assignments(self, cmd: str) -> str:
+        cmd = re.sub(r"SEC_TOKEN_STRING='[^']*'", 'SEC_TOKEN_STRING="$SEC_TOKEN_STRING"', cmd)
+        cmd = re.sub(r'SEC_TOKEN_STRING="[^"]*"', 'SEC_TOKEN_STRING="$SEC_TOKEN_STRING"', cmd)
+        return cmd
 
     def _write_json(self, path: Path, obj: Any) -> None:
         path.write_text(json.dumps(obj, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
